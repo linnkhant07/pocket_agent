@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -117,21 +118,53 @@ def dedupe(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     return kept, dropped
 
 
-def build_training_mix(*, include_groq: bool = True, groq_path: Path | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def balance_teach_gold(rows: list[dict[str, Any]], *, seed: int = 29) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """If scripted teach-gold is more than half the mix, keep only as many as the other sources.
+
+    Gold plus Groq then make up at least half. The kept teach rows are a seeded
+    round-robin over skills, so track traces are not the first thing dropped.
+    """
+    teach = [row for row in rows if row["source"] == "teach_gold"]
+    other = [row for row in rows if row["source"] != "teach_gold"]
+    info = {"applied": False, "teach_before": len(teach), "other": len(other), "teach_kept": len(teach)}
+    if len(teach) <= len(other):
+        return rows, info
+    by_skill: dict[str, list[dict[str, Any]]] = {}
+    for row in teach:
+        by_skill.setdefault(row["skill"], []).append(row)
+    rng = random.Random(seed)
+    for skill in by_skill:
+        rng.shuffle(by_skill[skill])
+    skills = sorted(by_skill)
+    kept: list[dict[str, Any]] = []
+    cursor = 0
+    while len(kept) < len(other) and any(by_skill.values()):
+        bucket = by_skill[skills[cursor % len(skills)]]
+        if bucket:
+            kept.append(bucket.pop())
+        cursor += 1
+    info.update({"applied": True, "teach_kept": len(kept)})
+    return other + kept, info
+
+
+def build_training_mix(*, include_groq: bool = True, groq_path: Path | None = None, balance_teach: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     gold = [{"source": "gold", "skill": _skill_from_id(row["task_id"]), "task_id": row["task_id"], "messages": row["messages"]} for row in iter_gold_rows()]
     teach = teach_gold_rows()
     groq, dropped_empty = groq_rows(groq_path) if include_groq else ([], 0)
     combined = gold + teach + groq
-    kept, dropped_dupes = dedupe(combined)
+    deduped, dropped_dupes = dedupe(combined)
+    balanced, balance_info = balance_teach_gold(deduped) if balance_teach else (deduped, {"applied": False})
     summary = {
         "include_groq": include_groq,
         "before_dedupe": _counts(combined),
-        "after_dedupe": _counts(kept),
+        "after_dedupe": _counts(deduped),
+        "after_balance": _counts(balanced),
         "dropped_duplicates": dropped_dupes,
         "dropped_empty_groq": dropped_empty,
-        "n": len(kept),
+        "balance": balance_info,
+        "n": len(balanced),
     }
-    return kept, summary
+    return balanced, summary
 
 
 def _skill_from_id(task_id: str) -> str:

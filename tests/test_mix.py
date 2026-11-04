@@ -22,6 +22,20 @@ def test_groq_conversion_drops_invalid_first_action() -> None:
     assert any(message["content"].startswith("TOOL_RESULT search_jobs") for message in messages)
 
 
+def test_teach_gold_is_cut_so_other_sources_are_half() -> None:
+    from pocket_agent.mix import balance_teach_gold
+
+    teach = [{"source": "teach_gold", "skill": skill, "task_id": f"t{i}", "messages": [{"role": "user", "content": f"t{i}"}]} for i, skill in enumerate(["find_new_jobs", "track", "screen_and_rank", "prefill_answers"] * 5)]
+    other = [{"source": "gold", "skill": "track", "task_id": "g", "messages": [{"role": "user", "content": "g"}]}]
+    other += [{"source": "groq", "skill": "find_new_jobs", "task_id": f"q{i}", "messages": [{"role": "user", "content": f"q{i}"}]} for i in range(4)]
+    kept, info = balance_teach_gold(other + teach)
+    assert info["applied"] is True
+    assert info["teach_kept"] == 5
+    assert sum(row["source"] == "teach_gold" for row in kept) == 5
+    assert sum(row["source"] != "teach_gold" for row in kept) == 5
+    assert len({row["skill"] for row in kept if row["source"] == "teach_gold"}) == 4
+
+
 def test_dedupe_keeps_the_first_copy() -> None:
     rows = [
         {"source": "gold", "skill": "track", "messages": [{"role": "user", "content": "same"}, {"role": "assistant", "content": "a"}]},
