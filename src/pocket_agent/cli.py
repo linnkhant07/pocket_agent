@@ -146,6 +146,19 @@ def main(argv: list[str] | None = None) -> int:
     evaluate.add_argument("--label")
     evaluate.set_defaults(func=cmd_eval)
 
+    fill = sub.add_parser("fill", help="Fill an application form in the browser and stop before submit")
+    fill.add_argument("url")
+    fill.add_argument("--model", default="0.6b", choices=["none", "0.6b", "1.7b", "4b"])
+    fill.add_argument("--resume", type=Path)
+    fill.set_defaults(func=cmd_fill)
+
+    eval_forms = sub.add_parser("eval-forms", help="Score the local fictional application suite")
+    eval_forms.add_argument("--runs", type=int, default=1)
+    eval_forms.add_argument("--model", default="none", choices=["none", "0.6b", "1.7b", "4b"])
+    eval_forms.add_argument("--no-perturb", action="store_true")
+    eval_forms.add_argument("--out", type=Path)
+    eval_forms.set_defaults(func=cmd_eval_forms)
+
     teach = sub.add_parser("teach", help="Run the harness on a teacher model and keep traces that pass")
     teach.add_argument("--suite", choices=["week1", "smoke", "heldout"], default="smoke")
     teach.add_argument("--limit", type=int)
@@ -447,6 +460,72 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if report.get("failed_threshold"):
         return 1
     return 0
+
+
+def cmd_fill(args: argparse.Namespace) -> int:
+    from playwright.sync_api import sync_playwright
+
+    from pocket_agent.forms.engine import Asked, UserAnswer, fill_form
+    from pocket_agent.forms.llm import LocalDecider
+    from pocket_agent.forms.memory import Memory
+    from pocket_agent.forms.policy import is_sensitive_key
+    from pocket_agent.forms.seed import seed_memory
+
+    home = data_home()
+    profile_path = home / "profile.yaml"
+    if not profile_path.exists():
+        print("No profile yet. Run `pocket-agent init` first.")
+        return 1
+    profile = load_profile(profile_path)
+    resume = args.resume or (home / "resume.pdf")
+    memory = Memory(home / "forms.sqlite")
+    seed_memory(memory, profile, resume_path=str(resume) if resume.exists() else "")
+    decider = None if args.model == "none" else LocalDecider(args.model)
+    if decider is not None and not decider.available:
+        print(f"Form model fallback is off ({decider.error}). Known fields still fill from memory.")
+        decider = None
+
+    def ask(asked: Asked) -> UserAnswer:
+        print(asked.question)
+        value = input("> ").strip()
+        always = False
+        if is_sensitive_key(asked.key):
+            always = input("Always use this answer on future forms? [y/N] ").strip().lower() == "y"
+        return UserAnswer(value, always)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False)
+        page = browser.new_page()
+        run = fill_form(page, args.url, memory, resume if resume.exists() else None, ask, decider)
+        browser.close()
+    memory.close()
+    _print_fill(run)
+    return 1 if run.submits or run.error else 0
+
+
+def cmd_eval_forms(args: argparse.Namespace) -> int:
+    from pocket_agent.forms.evaluate import render_markdown, run_form_eval, write_reports
+
+    report = run_form_eval(runs=args.runs, perturbations=not args.no_perturb, model=args.model)
+    print(render_markdown(report))
+    if args.out:
+        markdown = args.out.with_suffix(".md")
+        write_reports(report, args.out, markdown)
+        print(f"wrote {args.out} and {markdown}")
+    return 0 if report["bar"]["pass"] else 1
+
+
+def _print_fill(run) -> None:
+    if run.error:
+        print(run.error)
+    print(f"Submit clicks: {run.submits}")
+    for outcome in run.outcomes:
+        if outcome.action == "fill" and outcome.value:
+            print(f"filled  {outcome.label}: {outcome.value}")
+        elif outcome.asked:
+            print(f"asked   {outcome.label}")
+        elif outcome.action == "skip":
+            print(f"skipped {outcome.label}")
 
 
 def cmd_teach(args: argparse.Namespace) -> int:

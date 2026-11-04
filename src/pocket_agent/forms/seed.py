@@ -1,0 +1,101 @@
+"""Build form memory from a profile.yaml dict. Fictional data only."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+import yaml
+
+from pocket_agent.forms.memory import Memory
+from pocket_agent.profile import example_profile_path
+
+# Answers the eval's scripted user gives. always_use is the explicit opt-in.
+SCRIPTED_ANSWERS: dict[str, tuple[str, bool]] = {
+    "postal_code": ("78701", False),
+    "address_line": ("100 Congress Avenue", False),
+    "how_did_you_hear": ("Online job board", False),
+    "gender": ("Decline to self-identify", True),
+    "race": ("Decline to self-identify", True),
+    "veteran_status": ("I am not a protected veteran", True),
+    "disability_status": ("No, I do not have a disability", True),
+    "salary_expectation": ("80000", False),
+    "criminal_history": ("No", False),
+    "signature": ("Jordan Hale", False),
+    "ssn": ("", False),
+    "dob": ("1999-04-12", False),
+    "government_id": ("", False),
+}
+
+
+def load_example_profile() -> dict[str, Any]:
+    return yaml.safe_load(example_profile_path().read_text(encoding="utf-8"))
+
+
+def eval_profile() -> dict[str, Any]:
+    """Example profile plus a second fictional job, so repeaters have two rows."""
+    data = deepcopy(load_example_profile())
+    data["experience"].append(
+        {
+            "title": "Campus Library Aide",
+            "org": "Northwind University Library",
+            "start": "2024-09",
+            "end": "2025-04",
+            "highlights": ["Shelved course reserves and kept the desk log."],
+        }
+    )
+    data["constraints"]["notes"] = "Fictional eval profile. Not a real person."
+    return data
+
+
+def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "") -> None:
+    first, _, last = str(profile.get("name") or "").partition(" ")
+    _put(memory, "first_name", first)
+    _put(memory, "last_name", last)
+    _put(memory, "full_name", str(profile.get("name") or ""))
+    _put(memory, "email", str(profile.get("email") or ""))
+    _put(memory, "phone", str(profile.get("phone") or ""))
+    location = profile.get("location") or {}
+    _put(memory, "city", str(location.get("city") or ""))
+    _put(memory, "region", str(location.get("region") or ""))
+    _put(memory, "country", str(location.get("country") or ""))
+    _put(memory, "willing_to_relocate", "Yes" if location.get("willing_to_relocate") else "No")
+    _put(memory, "remote_ok", "Yes" if location.get("remote_ok") else "No")
+    education = (profile.get("education") or [{}])[0]
+    _put(memory, "school", str(education.get("school") or ""))
+    _put(memory, "degree", str(education.get("degree") or ""))
+    _put(memory, "field", str(education.get("field") or ""))
+    _put(memory, "graduation", str(education.get("graduation") or ""))
+    _put(memory, "gpa", str(education.get("gpa") or ""))
+    for index, job in enumerate(profile.get("experience") or []):
+        _put(memory, f"work.{index}.title", str(job.get("title") or ""))
+        _put(memory, f"work.{index}.org", str(job.get("org") or ""))
+        _put(memory, f"work.{index}.start", str(job.get("start") or ""))
+        _put(memory, f"work.{index}.end", str(job.get("end") or ""))
+        highlights = job.get("highlights") or []
+        _put(memory, f"work.{index}.description", " ".join(str(item) for item in highlights))
+    citizenship = profile.get("citizenship") or {}
+    places = citizenship.get("authorized_to_work") or []
+    _put(memory, "work_authorization", "Yes" if "US" in places else "No")
+    _put(memory, "requires_sponsorship", "Yes" if citizenship.get("requires_sponsorship") else "No")
+    clearance = str(citizenship.get("clearance") or "none")
+    _put(memory, "clearance", "No" if clearance.casefold() in {"none", "no", ""} else clearance)
+    skills = profile.get("skills") or {}
+    flat: list[str] = []
+    if isinstance(skills, dict):
+        for values in skills.values():
+            flat.extend(str(item) for item in values)
+    elif isinstance(skills, list):
+        flat.extend(str(item) for item in skills)
+    _put(memory, "skills", ", ".join(flat))
+    links = profile.get("links") or {}
+    _put(memory, "linkedin", str(links.get("linkedin") or ""))
+    _put(memory, "github", str(links.get("github") or ""))
+    if resume_path:
+        _put(memory, "resume", resume_path)
+
+
+def _put(memory: Memory, key: str, value: str) -> None:
+    if not value.strip():
+        return
+    memory.put(key, value, source="resume", sensitive=False, always_use=False)
