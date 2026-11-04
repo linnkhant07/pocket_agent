@@ -35,12 +35,12 @@ def run_eval(
     tasks = tasks_for_suite(suite)
     if limit is not None:
         tasks = tasks[:limit]
-    ollama_peak = _named_rss_mb("ollama") or 0.0
+    ollama_peak = _model_server_rss_mb()
     rows = []
     for task in tasks:
-        ollama_peak = max(ollama_peak, _named_rss_mb("ollama") or 0.0)
+        ollama_peak = max(ollama_peak, _model_server_rss_mb())
         rows.append(_run_one(task, backend=backend, model=model, base_url=base_url))
-        ollama_peak = max(ollama_peak, _named_rss_mb("ollama") or 0.0)
+        ollama_peak = max(ollama_peak, _model_server_rss_mb())
     report = _summarize(rows, suite=suite, backend=backend, model=model, label=label)
     report["peak_rss_mb"] = _peak_rss_mb()
     report["ollama_rss_mb"] = round(ollama_peak, 1) if backend == "ollama" and ollama_peak else None
@@ -169,6 +169,11 @@ def _peak_rss_mb() -> float | None:
         return None
 
 
+def _model_server_rss_mb() -> float:
+    """RSS of the Ollama parent plus llama-server, which is where the weights sit."""
+    return max(_named_rss_mb("ollama") or 0.0, _named_rss_mb("llama-server") or 0.0)
+
+
 def _named_rss_mb(name: str) -> float | None:
     proc = Path("/proc")
     if not proc.exists():
@@ -208,7 +213,7 @@ def format_report(report: dict[str, Any]) -> str:
         if report["latency_p50_s"] is not None
         else "latency: n/a",
         f"peak RSS MB: {report.get('peak_rss_mb')}",
-        f"ollama RSS MB: {report.get('ollama_rss_mb')}",
+        f"model server RSS MB: {report.get('ollama_rss_mb')}",
         f"tokens/s: {report.get('tokens_per_second')}",
     ]
     failed = [row for row in report["tasks"] if not row["success"]]
