@@ -1,5 +1,7 @@
 # Pocket Agent
 
+Repository: [github.com/linnkhant07/pocket_agent](https://github.com/linnkhant07/pocket_agent). The Python package and the `pocket-agent` command keep the hyphen. The GitHub repo name is `pocket_agent`.
+
 Pocket Agent is a free, MIT-licensed recruiting assistant that runs on your machine. It reads public job lists, scores them against a local `profile.yaml`, and keeps an application tracker in SQLite. It drafts answers from the profile and asks you when a fact is missing.
 
 It does not submit applications. There is no apply tool.
@@ -124,7 +126,9 @@ uv run pocket-agent eval --suite week1 --backend mock --fail-under 1
 uv run pocket-agent eval --suite smoke --backend ollama --model qwen3:0.6b --label "CPU smoke test"
 ```
 
-Verified on 2026-11-04: both Simplify `listings.json` URLs returned JSON, `boards-api.greenhouse.io/v1/boards/stripe/jobs` returned jobs, and `api.lever.co/v0/postings/spotify?mode=json` returned postings. `netflix` on Lever returned 404, so company slugs are not guessed.
+Verified on 2026-11-04 through `pocket-agent fetch`: Simplify `listings.json` for both repos, Greenhouse board `stripe` (2 jobs fetched, 1 new after dedupe), and Lever board `spotify` (2 jobs). The three newest new-grad rows that day were AMAX, Apple, and Keysight. `netflix` on Lever returned 404, so company slugs are not guessed.
+
+`data/snapshots/public_postings.jsonl` is a frozen slice from that same day: the 1,000 most recently posted active rows from each Simplify list, 1,857 left after dedupe, posted from 2026-10-05 through 2026-11-03. `data/synthetic/profiles.jsonl` is 300 fictional profiles from `pocket-agent synth --seed 428`. The hand-checked eval still uses the small fictional fixture, not this public snapshot.
 
 The hand-checked eval is pinned to 2026-11-04. Jordan Hale graduates in May 2026, so Summer 2027 internships are ineligible on purpose.
 
@@ -155,10 +159,31 @@ mock suite: task success 50/50 (1.0), tool-call accuracy 1.0, JSON validity 1.0,
 
 ### CPU smoke test
 
-This is a small-model CPU run, not a claim about the 16 GB tier. Tokens per second are reported only when the server returns a usage field. Peak RSS is the eval process. Ollama RSS is sampled separately when that process is visible.
+Measured on this Linux x86_64 VM (4 cores, 15.6 GB RAM, no GPU) with Ollama `qwen3:0.6b` (522,653,767 bytes on disk). Command:
+
+```bash
+uv run pocket-agent eval --suite week1 --backend ollama --model qwen3:0.6b --label "CPU smoke test"
+```
+
+Ollama was called through its native `/api/chat` with thinking turned off. The OpenAI-compatible shim on this Ollama build left `content` empty and put the Qwen3 trace in `reasoning`, so the native API is what the CLI uses for Ollama. llama.cpp and MLX still use `/v1/chat/completions`.
+
+| Metric | Result |
+| --- | --- |
+| Tasks | 2/50 |
+| Task success | 0.04 |
+| Tool-call accuracy | 0.40 |
+| JSON validity | 1.0 |
+| Restraint | 0.111 (2 of 18 restraint tasks) |
+| Latency p50 / p95 | 0.449 s / 0.622 s |
+| Eval process peak RSS | 39.2 MB |
+| llama-server RSS | 1112.5 MB |
+| Completion tokens | 1080 |
+| Tokens/s | 45.1 |
+
+Tokens/s is `eval_count / latency` from Ollama. The two successes were both ASK_USER turns (salary expectation, notice period). JSON was valid on every assistant turn. The usual failure was no tool call: the model answered with the example sentence from the system prompt ("Contoso Robotics is an eligible new-grad match.") instead of calling `search_jobs`, `score_fit`, or `db_upsert`. Tool-call accuracy is the fraction of tasks whose required-tool checks passed, not the fraction of calls that named the right tool. This is a CPU smoke baseline for a 0.6B model, not a result for the 16 GB default (`qwen3.5:4b`).
 
 <!-- CPU_EVAL_START -->
-CPU smoke test: not recorded yet.
+CPU smoke test, qwen3:0.6b, Linux 4 cores, 15.6 GB RAM, no GPU, 2026-11-04: task success 2/50 (0.04), tool-call accuracy 0.40, JSON validity 1.0, restraint 2/18 (0.111), latency p50/p95 0.449s/0.622s, eval peak RSS 39.2 MB, llama-server RSS 1112.5 MB, 1080 completion tokens, 45.1 tokens/s.
 <!-- CPU_EVAL_END -->
 
 Metrics: task success, tool-call accuracy, JSON validity, restraint (ASK_USER, ineligible roles, refusal to submit), p50/p95 latency, tokens/s when the server reports usage, and peak RAM.
@@ -167,7 +192,7 @@ Metrics: task success, tool-call accuracy, JSON validity, restraint (ASK_USER, i
 
 Week 1, this tree: repo, init, profile, tracker, Simplify-first feeds plus optional Greenhouse and Lever, snapshot save/load/freeze, MCP, the agent loop, 50 hand-checked tasks, and CI.
 
-Week 2: a few hundred more synthetic profiles (the generator is `pocket-agent synth`), a frozen snapshot of about 2,000 public postings, teacher traces from a cloud model on the same harness, and a larger held-out set. Keep a trace only when the checker passes. Include restraint cases. Scrub anything that is not fictional. The canary string stays in the data so a real profile cannot be mixed in by accident. Never train on `~/.pocket-agent/`.
+Week 2, started: 300 synthetic profiles and a frozen snapshot of 1,857 recent public postings are in the repo. Still open: teacher traces from a cloud model on the same harness, and a larger held-out set (the plan's target is about 200 tasks plus a 30-task trap set). Keep a trace only when the checker passes. Include restraint cases. Scrub anything that is not fictional. The canary string stays in the data so a real profile cannot be mixed in by accident. Never train on `~/.pocket-agent/`.
 
 Week 3: LoRA SFT. On a Mac, `mlx_lm.lora`. On NVIDIA or Colab, TRL SFT or Unsloth. Quantize, export, and run the same eval again. Optional GRPO where the reward is the programmatic checker: task success, valid tool JSON, and restraint.
 
