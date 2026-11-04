@@ -106,7 +106,7 @@ class GroqBackend:
                 # empty turn so its normal one-retry correction runs.
                 self.requests += 1
                 return Completion(text="", latency_s=time.perf_counter() - started)
-            if response.status_code == 400 and "json_validate_failed" in response.text:
+            if response.status_code == 400 and ("json_validate_failed" in response.text or "output_parse_failed" in response.text):
                 self.requests += 1
                 return Completion(text="", latency_s=time.perf_counter() - started)
             if response.status_code != 200:
