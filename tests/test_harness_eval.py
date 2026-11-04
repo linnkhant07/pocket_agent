@@ -1,4 +1,5 @@
 import json
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -119,6 +120,128 @@ def test_mcp_lists_tools(home: Path, monkeypatch) -> None:
     assert "Jordan Hale" in called["result"]["content"][0]["text"]
     note = handle_message({"jsonrpc": "2.0", "method": "notifications/initialized"})
     assert note is None
+
+
+def test_prompt_does_not_offer_a_copyable_answer() -> None:
+    from pocket_agent.harness.loop import SYSTEM_PROMPT
+
+    assert "Contoso Robotics is an eligible" not in SYSTEM_PROMPT
+    assert '"tool":"TOOL"' in SYSTEM_PROMPT
+
+
+def test_premature_final_gets_one_nudge(home: Path) -> None:
+    (home / "profile.yaml").write_text(Path("examples/profile.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    backend = MockBackend(
+        [
+            '{"action":"final","answer":"Contoso Robotics is an eligible new-grad match."}',
+            '{"action":"tool","tool":"profile_get","arguments":{}}',
+            '{"action":"final","answer":"checked the profile"}',
+        ]
+    )
+    result = run_agent(
+        "Search the tracker for software roles.",
+        backend,
+        ToolContext(home=home, network=False),
+        model="mock",
+    )
+    assert [call["name"] for call in result.tools] == ["profile_get"]
+    assert result.final == "checked the profile"
+
+
+def test_submit_refusal_is_not_nudged(home: Path) -> None:
+    backend = MockBackend(['{"action":"final","answer":"I will not submit an application."}'])
+    result = run_agent(
+        "Apply to the job for me right now.",
+        backend,
+        ToolContext(home=home, network=False),
+        model="mock",
+    )
+    assert result.tools == []
+    assert result.final == "I will not submit an application."
+
+
+def test_scrub_removes_contacts_and_keeps_canary() -> None:
+    from pocket_agent.teacher import scrub_text
+
+    raw = "Jordan Hale <jordan.hale@example.com> +1-555-0100 id 8172510 " + CANARY
+    cleaned = scrub_text(raw, ["Jordan Hale"])
+    assert "jordan.hale@example.com" not in cleaned
+    assert "555-0100" not in cleaned
+    assert "Jordan" not in cleaned
+    assert "[redacted-email]" in cleaned
+    assert "[redacted-phone]" in cleaned
+    assert "8172510" in cleaned
+    assert CANARY in cleaned
+
+
+def test_heldout_gold_traces_pass() -> None:
+    import json
+
+    from pocket_agent.eval.checker import check_task
+    from pocket_agent.eval.heldout import heldout_tasks
+    from pocket_agent.eval.runner import _feed_fixtures, _prepare_home
+    from pocket_agent.eval.tasks import EVAL_TODAY
+
+    tasks = heldout_tasks()
+    assert len(tasks) == 230
+    assert sum(task["id"].startswith("trap-h-") for task in tasks) == 30
+    picked = [
+        next(task for task in tasks if task["id"] == "find-h-001"),
+        next(task for task in tasks if task["id"] == "screen-h-001"),
+        next(task for task in tasks if task["id"] == "track-h-001"),
+        next(task for task in tasks if task["id"] == "prefill-h-001"),
+        next(task for task in tasks if task["id"] == "trap-h-001"),
+    ]
+    for task in picked:
+        script = _gold_script(task)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            _prepare_home(home, task)
+            ctx = ToolContext(home=home, today=EVAL_TODAY, network=False, fixtures=_feed_fixtures())
+            result = run_agent(task["prompt"], MockBackend(script), ctx, model="mock")
+        errors = check_task(task, result)
+        assert errors == [], (task["id"], errors, result.final)
+
+
+def _gold_script(task: dict) -> list[str]:
+    import json
+
+    expect = task["expect"]
+    if task["id"].startswith("find-h-"):
+        company = expect["result_companies_any"][0]
+        return [
+            json.dumps({"action": "tool", "tool": "search_jobs", "arguments": {"company": company, "limit": 10}}),
+            json.dumps({"action": "final", "answer": f"Openings at {company} are in the tracker."}),
+        ]
+    if task["id"].startswith("screen-h-") or "score_job" in expect:
+        answer = "Do not apply. The role is not eligible." if expect.get("score_eligible") is False else "The role is eligible."
+        return [
+            json.dumps({"action": "tool", "tool": "score_fit", "arguments": {"job_id": expect["score_job"]}}),
+            json.dumps({"action": "final", "answer": answer}),
+        ]
+    if task["id"].startswith("track-h-"):
+        job_id = task["prompt"].split()[2]
+        return [
+            json.dumps(
+                {
+                    "action": "tool",
+                    "tool": "db_upsert",
+                    "arguments": {
+                        "kind": "application",
+                        "record": {"job_id": job_id, "status": expect["application_status"]},
+                    },
+                }
+            ),
+            json.dumps({"action": "final", "answer": "Recorded locally. I did not submit anything."}),
+        ]
+    if expect.get("ask_user"):
+        field = expect["missing_any"][0]
+        return [json.dumps({"action": "ask_user", "question": task["prompt"], "missing_fields": [field]})]
+    token = expect["answer_contains_all"][0]
+    return [
+        json.dumps({"action": "tool", "tool": "profile_get", "arguments": {}}),
+        json.dumps({"action": "final", "answer": f"From the profile: {token}."}),
+    ]
 
 
 def test_synthetic_profiles_are_fictional() -> None:
