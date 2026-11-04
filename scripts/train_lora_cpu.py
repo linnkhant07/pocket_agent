@@ -10,6 +10,7 @@ The adapter is not committed when it is large. This script does not call a paid 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -18,19 +19,21 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
-from pocket_agent.trainset import iter_gold_rows
+from pocket_agent.mix import build_training_mix
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--max-steps", type=int, default=40)
+    parser.add_argument("--max-steps", type=int, default=64)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--rank", type=int, default=8)
+    parser.add_argument("--no-groq", action="store_true", help="Ablation: gold traces only, no Groq teacher traces")
     args = parser.parse_args()
     torch.set_num_threads(4)
-    rows = iter_gold_rows()
+    rows, summary = build_training_mix(include_groq=not args.no_groq)
+    print(json.dumps(summary, indent=2))
     dataset = Dataset.from_list([{"messages": row["messages"]} for row in rows])
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     try:
