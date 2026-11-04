@@ -143,3 +143,21 @@ Eval used a transformers backend, greedy, capped at 96 new tokens, same cap for 
 Base week-1 latency p50/p95 was 2.739 s / 13.243 s, 10.4 tokens/s, 2,717 completion tokens. Base held-out was 6.415 s / 17.308 s, 11.7 tokens/s, 5,903 tokens. Tuned week-1 was 4.907 s / 14.053 s, 10.4 tokens/s, 3,095 tokens. Tuned held-out was 7.234 s / 16.070 s, 9.8 tokens/s, 4,575 tokens. The held-out slice's 15 trap tasks all passed after LoRA. Restraint on that slice was 26/26. The earlier Ollama week-1 number, before the prompt listed the canonical fields, remains 1/50.
 
 The week-1 gain is real and smaller than the held-out gain. Week 1 asks for specific phrases about Contoso, Northwind, and Austin. The gold traces never saw those strings. The held-out companies were also unseen, and the format transferred anyway.
+
+## 2026-11-04 — Groq traces, then a second LoRA
+
+`main` was fast-forwarded from `abb12a6` to `2794c45` (seven commits, no rewrite). That history adds 309 teach tasks on 60 fictional employers and 25 cities, a resumable Groq collector, and `data/teacher/teach_attempts.jsonl` plus 40 accepted traces.
+
+The attempts file has 157 rows: 40 accepted, 117 rejected. By model, `openai/gpt-oss-120b` is 33 accepted out of 75 attempts, and `openai/gpt-oss-20b` is 7 out of 82. The accepted set is 26 find, 12 prefill, 2 screen, and 0 track. The 120b run log stops with Groq's daily token cap: limit 200,000, used 198,536, requested 2,780. The 20b run stops on a time box after 79 attempts in that log line (7 accepted, 721.6 s). gpt-oss was the teacher because Gemini and OpenAI terms forbid training a competing model. gpt-oss weights are Apache-2.0, and the Groq calls were on the free tier. No paid API was used for the student.
+
+The new mix, after dedupe, is 396 chats: 47 from the original gold set (68 before 21 duplicate conversations were dropped), 309 scripted teach-gold traces, and all 40 Groq traces. Teach-gold by skill: find 92, screen 80, track 75, prefill 62. Gold before dedupe: find 19, screen 15, track 14, prefill 20. Invalid Groq turns, the ones that failed JSON schema, were removed before training so the student would not copy `{"action":"search_jobs"}` without a `tool` field. TRL's assistant-only loss then dropped 6 fully masked rows and trained on 390. Sixty-four steps took 2,260 seconds, logged train loss 0.2783, epoch 0.656. Adapter: `/opt/cursor/artifacts/pocket-qwen3-0.6b-lora-mix`, 9,204,512 bytes, not committed. A gold-only retrain, to isolate the 40 Groq traces, did not fit after this run.
+
+Same eval as run 3: transformers, greedy, 96 new tokens, week 1 and the same 60-task held-out slice (15 traps).
+
+| | Week 1 | Held-out 60 | Tool accuracy | JSON valid | Restraint |
+| --- | --- | --- | --- | --- | --- |
+| Base | 3/50 | 5/60 | 0.40 and 0.367 | 0.767 and 0.742 | 3/18 and 3/26 |
+| Gold-only LoRA | 11/50 | 43/60 | 0.82 and 0.867 | 0.81 and 0.928 | 8/18 and 26/26 |
+| Mix LoRA | 9/50 | 36/60 | 0.84 and 0.833 | 0.86 and 0.948 | 7/18 and 24/26 |
+
+Mix week-1 latency p50/p95 was 5.584 s / 11.982 s, 10.4 tokens/s, 3,178 completion tokens, process RSS 4,742.0 MB. Mix held-out was 7.548 s / 19.540 s, 9.4 tokens/s, 4,436 tokens, RSS 4,742.3 MB. Thirteen of 15 traps passed. The mix beats the base and loses to the 40-step gold-only adapter. It saw each example less often (0.66 epoch versus 2.35), and the Groq slice has no accepted track traces. That is a description of the run, not a controlled ablation.

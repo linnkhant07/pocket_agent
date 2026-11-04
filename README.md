@@ -184,10 +184,13 @@ Eval below is the transformers backend, greedy, at most 96 new tokens. Base and 
 
 | Run | Week 1 | Held-out 60 | Tool accuracy | JSON valid | Restraint | p50 / p95 | Process RSS | tokens/s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Base Qwen3-0.6B | 3/50 | 5/60 | 0.40 / 0.367 | 0.767 / 0.742 | 3/18 and 3/26 | week1 2.739 s / 13.243 s | 4742 MB | 10.4 / 11.7 |
-| LoRA Qwen3-0.6B | 11/50 | 43/60 | 0.82 / 0.867 | 0.81 / 0.928 | 8/18 and 26/26 | week1 4.907 s / 14.053 s; held-out 7.234 s / 16.070 s | 4742 MB | 10.4 / 9.8 |
+| Base Qwen3-0.6B | 3/50 | 5/60 | 0.40 / 0.367 | 0.767 / 0.742 | 3/18 and 3/26 | week1 2.739 s / 13.243 s; held-out 6.415 s / 17.308 s | 4742 MB | 10.4 / 11.7 |
+| Gold-only LoRA (40 steps, 68 traces) | 11/50 | 43/60 | 0.82 / 0.867 | 0.81 / 0.928 | 8/18 and 26/26 | week1 4.907 s / 14.053 s; held-out 7.234 s / 16.070 s | 4742 MB | 10.4 / 9.8 |
+| Mix LoRA (64 steps) | 9/50 | 36/60 | 0.84 / 0.833 | 0.86 / 0.948 | 7/18 and 24/26 | week1 5.584 s / 11.982 s; held-out 7.548 s / 19.540 s | 4742 MB | 10.4 / 9.4 |
 
-The older Ollama number, before this prompt listed the canonical field names, was 1/50 on week 1. The LoRA model passed every trap in the 60-task slice. Held-out p50/p95 for the base was 6.415 s / 17.308 s. Completion tokens were 2,717 and 5,903 for the base runs, 3,095 and 4,575 for the tuned runs.
+The older Ollama number, before this prompt listed the canonical field names, was 1/50 on week 1. The gold-only LoRA passed every trap in the 60-task slice. Completion tokens were 2,717 and 5,903 for the base runs, 3,095 and 4,575 for the gold-only runs, and 3,178 and 4,436 for the mix runs.
+
+The mix is 396 conversations after dedupe: 47 unique gold, 309 teach-gold, 40 Groq. Before dedupe the gold file had 68 (find 19, screen 15, track 14, prefill 20). Teach-gold is find 92, screen 80, track 75, prefill 62. Groq is find 26, screen 2, prefill 12, track 0. Dedupe dropped 21 gold copies. TRL then dropped 6 fully masked rows and trained on 390. That run was 64 steps, 2,260 seconds, train loss 0.2783, epoch 0.656. The adapter is 9,204,512 bytes at `/opt/cursor/artifacts/pocket-qwen3-0.6b-lora-mix`. A second train without the 40 Groq traces did not fit in the time box, so this is not a clean ablation. The mix is behind the gold-only LoRA on both suites (9/50 vs 11/50, 36/60 vs 43/60). It still beats the base model. Thirteen of the 15 traps in the slice passed.
 
 <!-- CPU_EVAL_START -->
 0.6B with example sentence: 2/50, tool accuracy 0.40, JSON 1.0, restraint 2/18, p50/p95 0.449/0.622 s, llama-server 1112.5 MB, 45.1 tok/s.
