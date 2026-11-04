@@ -118,7 +118,11 @@ TOOL_DESCRIPTIONS = {
     "db_query": "List applications, jobs, or stats. Set export_csv true to write CSV. sql must be one SELECT.",
     "db_upsert": "Save a local application label. record.job_id is required. This does not submit an application.",
     "score_fit": "Score one job_id from 0 to 100 and say whether it is eligible. Call this before telling the user to apply.",
-    "ask_user": "Ask for a missing fact. Use this for salary, veteran status, disability, notice period, travel, references, or demographics.",
+    "ask_user": (
+        "Ask for a missing fact. missing_fields must use these canonical names: "
+        "salary_expectation, veteran_status, disability_status, notice_period, "
+        "willing_to_travel, references, demographic."
+    ),
 }
 
 

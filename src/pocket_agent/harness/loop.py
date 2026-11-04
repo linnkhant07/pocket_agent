@@ -277,18 +277,26 @@ def run_agent(
             result.final = str(tool_result.get("question") or "")
             return result
         messages.append({"role": "assistant", "content": completion.text})
-        messages.append(
-            {
-                "role": "user",
-                "content": "TOOL_RESULT "
-                + parsed["tool"]
-                + " "
-                + json.dumps(tool_result, ensure_ascii=False)[:6000],
-            }
-        )
+        messages.append({"role": "user", "content": tool_result_message(parsed["tool"], tool_result)})
     result.error = "stopped: max steps"
     result.final = result.final or result.error
     return result
+
+
+CANONICAL_MISSING_FIELDS = (
+    "salary_expectation",
+    "veteran_status",
+    "disability_status",
+    "notice_period",
+    "willing_to_travel",
+    "references",
+    "demographic",
+)
+
+
+def tool_result_message(name: str, result: dict[str, Any]) -> str:
+    """User-turn text the model sees after a tool. Training traces use this same string."""
+    return "TOOL_RESULT " + name + " " + json.dumps(result, ensure_ascii=False)[:6000]
 
 
 def parse_action(text: str) -> dict[str, Any]:
