@@ -60,10 +60,12 @@ ORGS = [
 ROLES = ["software engineer", "new grad", "intern", "data scientist", "backend engineer"]
 
 
-def generate_profiles(count: int = 300, seed: int = 428) -> list[dict[str, Any]]:
+def generate_profiles(count: int = 300, seed: int = 428, start: int = 0) -> list[dict[str, Any]]:
+    """Profiles ``start`` .. ``start + count - 1``. Seed only affects sampled skills."""
     rng = random.Random(seed)
     profiles = []
-    for index in range(count):
+    for offset in range(count):
+        index = start + offset
         first = FIRST[index % len(FIRST)]
         last = LAST[(index * 3) % len(LAST)]
         degree = DEGREES[index % len(DEGREES)]
