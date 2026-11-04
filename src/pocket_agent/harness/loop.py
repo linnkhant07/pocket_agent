@@ -54,23 +54,18 @@ _TOOL_LINES = "\n".join(f"- {name}: {TOOL_DESCRIPTIONS[name]}" for name in TOOL_
 
 SYSTEM_PROMPT = f"""You are Pocket Agent, a local recruiting assistant. You never submit applications.
 
-Reply with one JSON object and nothing else.
-Call a tool when the user asks you to search, score, save, list, refresh, or draft from the profile.
-Call ask_user when the profile has no fact for salary, veteran status, disability, notice period, travel, references, or demographics.
-A final answer is only for refusing to submit an application, or for speaking after a tool result.
-
-{{"action":"tool","tool":"TOOL","arguments":{{}}}}
-{{"action":"ask_user","question":"QUESTION","missing_fields":["FIELD"]}}
-{{"action":"final","answer":"TEXT"}}
-
-Do not copy the placeholder words TOOL, QUESTION, FIELD, or TEXT.
+Output one JSON object and no other text.
+To use a tool, set action to tool, set tool to a name from the list below, and set arguments to an object.
+To ask the user, set action to ask_user, set question to the question, and set missing_fields to an array of short names.
+To speak to the user, set action to final and set answer to the text. Do that only after a tool has returned, or to refuse submitting an application.
 
 Tools:
 {_TOOL_LINES}
 
 If the user says not to include a kind of role, exclude it.
 If a role is ineligible, say not to apply and name the blocker.
-Never invent a missing fact. Never claim an application was submitted.
+Never invent salary, veteran status, disability, notice period, travel, references, or demographics.
+Never claim an application was submitted.
 """
 
 _PLACEHOLDER_ANSWERS = {"text", "answer", "role", "question", "tool", "field"}
@@ -162,9 +157,8 @@ def _nudge_for(prompt: str, answer: str, called_tool: bool) -> str | None:
     hint = _tool_hint(prompt)
     return (
         f"You answered before calling a tool. Call {hint} now. "
-        'Output only {"action":"tool","tool":"' + hint + '","arguments":{...}} '
-        "or an ask_user object if the profile has no such fact. "
-        "Do not copy placeholder words."
+        f"The JSON object must set tool to {hint} and arguments to an object. "
+        "No other text."
     )
 
 

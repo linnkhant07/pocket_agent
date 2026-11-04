@@ -126,7 +126,8 @@ def test_prompt_does_not_offer_a_copyable_answer() -> None:
     from pocket_agent.harness.loop import SYSTEM_PROMPT
 
     assert "Contoso Robotics is an eligible" not in SYSTEM_PROMPT
-    assert '"tool":"TOOL"' in SYSTEM_PROMPT
+    assert "FIELD" not in SYSTEM_PROMPT
+    assert "search_jobs" in SYSTEM_PROMPT
 
 
 def test_premature_final_gets_one_nudge(home: Path) -> None:
