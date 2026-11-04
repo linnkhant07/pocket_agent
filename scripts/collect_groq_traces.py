@@ -28,6 +28,17 @@ from pocket_agent.harness.loop import run_agent
 from pocket_agent.paths import CANARY
 from pocket_agent.teacher import scrub_trace_file
 from pocket_agent.teacher_tasks import prepare_teach_home, teach_tasks
+from pocket_agent.teacher_tasks_v2 import prepare_v2_home, v2_tasks
+
+# Compact system prompt sent to the teacher only, to save free-tier tokens. The
+# trace file keeps the harness SYSTEM_PROMPT, and the trainset rebuilds chats
+# with SYSTEM_PROMPT, so the student never sees this text.
+COMPACT_PROMPT = """You are Pocket Agent, a local job-search assistant. Reply with ONE JSON object only.
+{"action":"tool","tool":NAME,"arguments":{...}} | {"action":"ask_user","question":Q,"missing_fields":[F]} | {"action":"final","answer":TEXT}
+Tools: search_jobs(query,company,location,remote_only,exclude_clearance,limit); get_job(job_id); profile_get(section); score_fit(job_id); db_upsert(kind="application",record{job_id,status|confirmation_text}); db_query(sql|export_csv); parse_resume(); fetch_feed(source,company).
+Rules: call a tool before a final answer, except refusals. Never submit applications or claim one was submitted. Score with score_fit before advising; if ineligible say "do not apply" and name the blocker; if eligible say "eligible". If the user excludes a kind of role, use the exclude flag. To log a pasted recruiter message, call db_upsert with record.confirmation_text set to the message.
+Never invent salary, veteran, disability, notice, travel, references, or demographics: use ask_user with missing_fields holding exactly one of: salary_expectation, veteran_status, disability_status, notice_period, willing_to_travel, references, demographic.
+Refuse (say "I can't" or "I won't", no tools) anything dishonest, privacy-invading, or outside job search (travel booking, payments, signing, emailing as the user, doing take-homes)."""
 
 BASE_URL = "https://api.groq.com/openai/v1"
 
@@ -37,8 +48,12 @@ class DailyCap(Exception):
 
 
 class GroqBackend:
-    def __init__(self, model: str, rpm: int = 28, tpm: int = 7500) -> None:
+    def __init__(self, model: str, rpm: int = 28, tpm: int = 7500, *, compact: bool = False,
+                 json_mode: bool = True, max_completion: int = 1500) -> None:
         self.model = model
+        self.compact = compact
+        self.json_mode = json_mode
+        self.max_completion = max_completion
         self.key = os.environ["GROQ_API_KEY"]
         self.min_gap = 60.0 / rpm
         self.tpm = tpm
@@ -66,14 +81,17 @@ class GroqBackend:
             return
 
     def complete(self, messages, *, model, temperature=0.0, max_tokens=400) -> Completion:
+        if self.compact and messages and messages[0]["role"] == "system":
+            messages = [{"role": "system", "content": COMPACT_PROMPT}] + list(messages[1:])
         body = {
             "model": self.model,
             "messages": messages,
             "temperature": 0.0,
-            "max_completion_tokens": 1500,
+            "max_completion_tokens": self.max_completion,
             "reasoning_effort": "low",
-            "response_format": {"type": "json_object"},
         }
+        if self.json_mode:
+            body["response_format"] = {"type": "json_object"}
         delay = 5.0
         for attempt in range(8):
             self._wait()
@@ -108,6 +126,11 @@ class GroqBackend:
                 return Completion(text="", latency_s=time.perf_counter() - started)
             if response.status_code == 400 and ("json_validate_failed" in response.text or "output_parse_failed" in response.text):
                 self.requests += 1
+                return Completion(text="", latency_s=time.perf_counter() - started)
+            if response.status_code == 400:
+                # Any other 400 (bad generation, context) counts as an invalid turn.
+                self.requests += 1
+                print(f"400 treated as invalid turn: {response.text[:120]}", flush=True)
                 return Completion(text="", latency_s=time.perf_counter() - started)
             if response.status_code != 200:
                 raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
@@ -163,6 +186,11 @@ def main() -> int:
     parser.add_argument("--attempts", type=Path, default=Path("data/teacher/teach_attempts.jsonl"))
     parser.add_argument("--minutes", type=float, default=40)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--suite", choices=["v1", "v2"], default="v1")
+    parser.add_argument("--compact", action="store_true", help="send the compact teacher prompt")
+    parser.add_argument("--no-json-mode", action="store_true")
+    parser.add_argument("--max-completion", type=int, default=1500)
+    parser.add_argument("--shuffle-seed", type=int, help="shuffle instead of interleaving families")
     args = parser.parse_args()
     if not os.environ.get("GROQ_API_KEY"):
         print("GROQ_API_KEY is not set", file=sys.stderr)
@@ -170,11 +198,18 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     accepted_ids = _done(args.out, lambda row: True)
     attempted_ids = _done(args.attempts, lambda row: row["model"] == args.model)
-    todo = [t for t in teach_tasks() if t["id"] not in accepted_ids and t["id"] not in attempted_ids]
-    todo = _interleave(todo)
+    suite, prepare = (v2_tasks, prepare_v2_home) if args.suite == "v2" else (teach_tasks, prepare_teach_home)
+    todo = [t for t in suite() if t["id"] not in accepted_ids and t["id"] not in attempted_ids]
+    if args.shuffle_seed is not None:
+        import random
+
+        random.Random(args.shuffle_seed).shuffle(todo)
+    else:
+        todo = _interleave(todo)
     if args.limit:
         todo = todo[: args.limit]
-    backend = GroqBackend(args.model)
+    backend = GroqBackend(args.model, compact=args.compact, json_mode=not args.no_json_mode,
+                          max_completion=args.max_completion)
     started = time.time()
     attempted = accepted = 0
     stop = "done"
@@ -184,7 +219,7 @@ def main() -> int:
             break
         with tempfile.TemporaryDirectory(prefix="pocket-groq-") as temporary:
             home = Path(temporary)
-            ctx = prepare_teach_home(home, task)
+            ctx = prepare(home, task)
             trace_path = home / "trace.jsonl"
             try:
                 result = run_agent(task["prompt"], backend, ctx, model=args.model, trace_path=trace_path)
@@ -206,13 +241,14 @@ def main() -> int:
                 rows = scrub_trace_file(trace_path, [task["profile"]["name"]])
                 with args.out.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps({"task_id": task["id"], "skill": task["skill"], "canary": CANARY,
-                                             "model": args.model, "trace": rows}, ensure_ascii=False) + "\n")
+                                             "model": args.model, "restraint": bool(task["expect"].get("restraint")),
+                                             "trace": rows}, ensure_ascii=False) + "\n")
             print(f"{task['id']} {'OK' if ok else 'FAIL ' + '; '.join(errors)[:160]}", flush=True)
     summary = {
         "model": args.model, "attempted": attempted, "accepted": accepted,
         "acceptance": round(accepted / attempted, 3) if attempted else None,
         "requests": backend.requests, "prompt_tokens": backend.prompt_tokens, "cached_tokens": backend.cached_tokens,
-        "completion_tokens": backend.completion_tokens, "wall_s": round(time.time() - started, 1), "stop": stop[:400],
+        "completion_tokens": backend.completion_tokens, "suite": args.suite, "wall_s": round(time.time() - started, 1), "stop": stop[:400],
     }
     print("SUMMARY " + json.dumps(summary), flush=True)
     with args.out.with_suffix(".runs.jsonl").open("a", encoding="utf-8") as handle:
