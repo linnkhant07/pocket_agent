@@ -1,0 +1,13 @@
+Jordan Hale
+Austin, TX | jordan.hale@example.com | +1-555-0100
+Fictional resume shipped with Pocket Agent. Not a real person.
+
+Education
+Northwind University, B.S. Computer Science, May 2026, GPA 3.6
+
+Experience
+Software Engineering Intern, Contoso Robotics, May 2025 - Aug 2025
+Built an internal Python service for sensor logs.
+
+Skills
+Python, TypeScript, SQL, FastAPI, React

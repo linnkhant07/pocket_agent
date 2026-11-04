@@ -1,0 +1,10 @@
+# SimplifyJobs is the default and does not need company names.
+# Greenhouse and Lever are optional extras. Add a public board slug to enable one.
+simplify:
+  lists:
+    - new-grad
+    - intern
+greenhouse:
+  companies: []
+lever:
+  companies: []

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "eee-intern",
+    "company_name": "Wide World Importers",
+    "title": "Software Engineer Intern",
+    "locations": ["Austin, TX"],
+    "url": "https://example.com/jobs/ww-feed",
+    "active": true,
+    "is_visible": true,
+    "category": "Software",
+    "sponsorship": "Other",
+    "degrees": ["Bachelor's"],
+    "terms": ["Summer 2027"],
+    "date_posted": 1760004000
+  }
+]

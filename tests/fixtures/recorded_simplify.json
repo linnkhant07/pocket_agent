@@ -1,0 +1,19 @@
+[
+  {
+    "source": "Simplify",
+    "category": "Software",
+    "company_name": "Example Public Co",
+    "id": "6be0cbab-0819-4d12-9317-d153d1de3524",
+    "title": "Software Engineer",
+    "active": true,
+    "date_updated": 1773093246,
+    "date_posted": 1773093246,
+    "url": "https://example.com/jobs/recorded-shape",
+    "locations": ["Austin, TX"],
+    "company_url": "https://simplify.jobs/c/Example",
+    "is_visible": true,
+    "sponsorship": "Other",
+    "degrees": ["Bachelor's"],
+    "terms": ["Summer 2027"]
+  }
+]

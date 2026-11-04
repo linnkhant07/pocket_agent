@@ -1,0 +1,54 @@
+[
+  {
+    "id": "aaa-contoso",
+    "company_name": "Contoso Robotics",
+    "title": "Software Engineer, New Grad",
+    "locations": ["Austin, TX"],
+    "url": "https://example.com/jobs/contoso-feed",
+    "active": true,
+    "is_visible": true,
+    "category": "Software",
+    "sponsorship": "Other",
+    "degrees": ["Bachelor's"],
+    "date_posted": 1760000000
+  },
+  {
+    "id": "bbb-northwind",
+    "company_name": "Northwind Analytics",
+    "title": "Machine Learning Engineer, New Grad",
+    "locations": ["Remote"],
+    "url": "https://example.com/jobs/northwind-feed",
+    "active": true,
+    "is_visible": true,
+    "category": "AI/ML/Data",
+    "sponsorship": "Offers Sponsorship",
+    "degrees": ["Bachelor's", "Master's"],
+    "date_posted": 1760001000
+  },
+  {
+    "id": "ccc-contoso-dup",
+    "company_name": "Contoso Robotics",
+    "title": "Software Engineer, New Grad",
+    "locations": ["Austin, TX"],
+    "url": "https://example.com/jobs/contoso-feed-dup",
+    "active": true,
+    "is_visible": true,
+    "category": "Software",
+    "sponsorship": "Other",
+    "degrees": ["Bachelor's"],
+    "date_posted": 1760002000
+  },
+  {
+    "id": "ddd-closed",
+    "company_name": "Closed Example Co",
+    "title": "Software Engineer",
+    "locations": ["Austin, TX"],
+    "url": "https://example.com/jobs/closed-feed",
+    "active": false,
+    "is_visible": true,
+    "category": "Software",
+    "sponsorship": "Other",
+    "degrees": ["Bachelor's"],
+    "date_posted": 1760003000
+  }
+]

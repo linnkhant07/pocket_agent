@@ -1,0 +1,54 @@
+schema_version: 1
+canary: POCKET-AGENT-CANARY-7f3a
+name: Jordan Hale
+email: jordan.hale@example.com
+phone: "+1-555-0100"
+location:
+  city: Austin
+  region: TX
+  country: US
+  willing_to_relocate: true
+  remote_ok: true
+education:
+  - school: Northwind University
+    degree: BS
+    field: Computer Science
+    graduation: "2026-05"
+    gpa: 3.6
+citizenship:
+  country: US
+  authorized_to_work:
+    - US
+  requires_sponsorship: false
+  clearance: none
+experience:
+  - title: Software Engineering Intern
+    org: Contoso Robotics
+    start: "2025-05"
+    end: "2025-08"
+    highlights:
+      - Built an internal Python service for sensor logs
+skills:
+  languages:
+    - Python
+    - TypeScript
+    - SQL
+  frameworks:
+    - FastAPI
+    - React
+preferences:
+  roles:
+    - software engineer
+    - new grad
+    - intern
+  locations:
+    - Austin
+    - Remote
+    - San Francisco
+  target_start: "2026-06"
+links:
+  github: https://github.com/example-jordan-hale
+  linkedin: https://www.linkedin.com/in/example-jordan-hale
+constraints:
+  exclude_companies: []
+  notes: Fictional profile shipped with Pocket Agent. Not a real person.

@@ -1,0 +1,23 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+  pocket-agent:
+    build: .
+    depends_on:
+      - ollama
+    environment:
+      POCKET_AGENT_BACKEND: ollama
+      POCKET_AGENT_BASE_URL: http://ollama:11434/v1
+      POCKET_AGENT_HOME: /data
+    volumes:
+      - pocket:/data
+    entrypoint: ["pocket-agent"]
+    command: ["hardware"]
+
+volumes:
+  ollama:
+  pocket:

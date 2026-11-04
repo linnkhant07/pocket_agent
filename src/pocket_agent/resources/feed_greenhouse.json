@@ -1,0 +1,15 @@
+{
+  "jobs": [
+    {
+      "id": 101,
+      "title": "Backend Engineer",
+      "company_name": "Fabrikam",
+      "absolute_url": "https://example.com/gh/101",
+      "location": {"name": "Remote"},
+      "updated_at": "2026-10-01T00:00:00Z",
+      "first_published": "2026-10-01T00:00:00Z",
+      "education": "education_optional",
+      "content": "<p>Python and SQL services.</p>"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://example.com/jobs/search?gh_jid=8172510",
+      "id": 8172510,
+      "title": "Backend Engineer",
+      "company_name": "Example Board",
+      "location": {"name": "Seattle, San Francisco"},
+      "updated_at": "2026-10-29T10:42:09-04:00",
+      "first_published": "2026-09-09T10:50:29-04:00",
+      "education": "education_required",
+      "content": "&lt;p&gt;Build Python services. U.S. citizenship is required.&lt;/p&gt;"
+    }
+  ]
+}

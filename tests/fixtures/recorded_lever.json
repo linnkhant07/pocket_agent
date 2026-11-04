@@ -1,0 +1,18 @@
+[
+  {
+    "id": "2a55d6c9-c564-443a-be3e-a3851db5a93b",
+    "text": "Software Engineer",
+    "hostedUrl": "https://jobs.lever.co/example/2a55d6c9-c564-443a-be3e-a3851db5a93b",
+    "applyUrl": "https://jobs.lever.co/example/2a55d6c9-c564-443a-be3e-a3851db5a93b/apply",
+    "categories": {
+      "commitment": "Permanent",
+      "department": "Engineering",
+      "location": "New York, NY",
+      "team": "Platform",
+      "allLocations": ["New York, NY"]
+    },
+    "descriptionPlain": "Build TypeScript services. This fixture mirrors a public Lever posting shape.",
+    "createdAt": 1792767640768,
+    "workplaceType": "hybrid"
+  }
+]

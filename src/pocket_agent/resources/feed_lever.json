@@ -1,0 +1,15 @@
+[
+  {
+    "id": "lev-1",
+    "text": "Software Engineer",
+    "company_name": "Tailspin",
+    "hostedUrl": "https://example.com/lever/1",
+    "categories": {
+      "commitment": "Full-time",
+      "location": "Austin, TX",
+      "team": "Engineering"
+    },
+    "descriptionPlain": "TypeScript services for a fictional Tailspin board.",
+    "createdAt": 1760000000000
+  }
+]
