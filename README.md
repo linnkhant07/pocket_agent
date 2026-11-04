@@ -159,31 +159,28 @@ mock suite: task success 50/50 (1.0), tool-call accuracy 1.0, JSON validity 1.0,
 
 ### CPU smoke test
 
-Measured on this Linux x86_64 VM (4 cores, 15.6 GB RAM, no GPU) with Ollama `qwen3:0.6b` (522,653,767 bytes on disk). Command:
+Same machine for every row: Linux x86_64, 4 cores, 15.6 GB RAM, no GPU. Ollama is called through native `/api/chat` with thinking off. The OpenAI shim on this build left `content` empty for Qwen3. llama.cpp and MLX still use `/v1/chat/completions`.
 
-```bash
-uv run pocket-agent eval --suite week1 --backend ollama --model qwen3:0.6b --label "CPU smoke test"
-```
+| Run | Success | Tool accuracy | JSON valid | Restraint | p50 / p95 | llama-server RSS | tokens/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.6B, example sentence in the prompt | 2/50 | 0.40 | 1.0 | 2/18 | 0.449 s / 0.622 s | 1112.5 MB | 45.1 |
+| 0.6B, sentence removed, `FIELD` still in the prompt | 1/50 | 0.48 | 0.84 | 0/18 | 0.410 s / 3.040 s | 2057.3 MB | 32.3 |
+| 0.6B, no placeholder tokens | 1/50 | 0.40 | 0.41 | 0/18 | 1.347 s / 5.431 s | 3613.7 MB | 31.5 |
+| 1.7B, no placeholder tokens | 1/50 | 0.40 | 0.558 | 1/18 | 4.519 s / 11.448 s | 7855.5 MB | 15.6 |
 
-Ollama was called through its native `/api/chat` with thinking turned off. The OpenAI-compatible shim on this Ollama build left `content` empty and put the Qwen3 trace in `reasoning`, so the native API is what the CLI uses for Ollama. llama.cpp and MLX still use `/v1/chat/completions`.
+The first run's passes were ASK_USER for salary and notice period. The other answers copied "Contoso Robotics is an eligible new-grad match." and called no tool. Removing that sentence raised tool accuracy to 0.48 and produced real `profile_get`, `fetch_feed`, and `score_fit` calls, then the model copied `FIELD` into `missing_fields`. Removing placeholders dropped JSON validity to 0.41. On `qwen3:1.7b` the model asked about salary, veteran status, and disability, but it named the fields `salary`, `protected_veteran`, and `disability`. The checker required `salary_expectation`, `veteran_status`, and `disability_status`, so those turns failed. The one pass was `trap-notice`. Eval-process RSS stayed near 39 MB. The weights are in `llama-server`. `qwen3.5:4b` was not pulled.
 
-| Metric | Result |
-| --- | --- |
-| Tasks | 2/50 |
-| Task success | 0.04 |
-| Tool-call accuracy | 0.40 |
-| JSON validity | 1.0 |
-| Restraint | 0.111 (2 of 18 restraint tasks) |
-| Latency p50 / p95 | 0.449 s / 0.622 s |
-| Eval process peak RSS | 39.2 MB |
-| llama-server RSS | 1112.5 MB |
-| Completion tokens | 1080 |
-| Tokens/s | 45.1 |
+`pocket-agent eval --suite heldout` is 230 tasks (60 find, 60 screen, 40 track, 40 prefill, 30 traps) on the frozen snapshot and synthetic profiles. A 3-task slice on `qwen3:1.7b` scored 0/3. JSON validity 0.50, p50 9.192 s, llama-server 4543.6 MB, 14.8 tokens/s. The full 230 was not run on CPU.
 
-Tokens/s is `eval_count / latency` from Ollama. The two successes were both ASK_USER turns (salary expectation, notice period). JSON was valid on every assistant turn. The usual failure was no tool call: the model answered with the example sentence from the system prompt ("Contoso Robotics is an eligible new-grad match.") instead of calling `search_jobs`, `score_fit`, or `db_upsert`. Tool-call accuracy is the fraction of tasks whose required-tool checks passed, not the fraction of calls that named the right tool. This is a CPU smoke baseline for a 0.6B model, not a result for the 16 GB default (`qwen3.5:4b`).
+`pocket-agent teach` needs `POCKET_AGENT_TEACHER_BASE_URL` and `POCKET_AGENT_TEACHER_MODEL`. A local run at `http://127.0.0.1:11434/v1` with `qwen3:1.7b` saw 2 smoke tasks, accepted 0, dropped 2. Port 11434 uses native Ollama chat. No paid API was called.
 
 <!-- CPU_EVAL_START -->
-CPU smoke test, qwen3:0.6b, Linux 4 cores, 15.6 GB RAM, no GPU, 2026-11-04: task success 2/50 (0.04), tool-call accuracy 0.40, JSON validity 1.0, restraint 2/18 (0.111), latency p50/p95 0.449s/0.622s, eval peak RSS 39.2 MB, llama-server RSS 1112.5 MB, 1080 completion tokens, 45.1 tokens/s.
+0.6B with example sentence: 2/50, tool accuracy 0.40, JSON 1.0, restraint 2/18, p50/p95 0.449/0.622 s, llama-server 1112.5 MB, 45.1 tok/s.
+0.6B with FIELD placeholder: 1/50, tool accuracy 0.48, JSON 0.84, restraint 0/18, p50/p95 0.410/3.040 s, llama-server 2057.3 MB, 32.3 tok/s.
+0.6B with no placeholders: 1/50, tool accuracy 0.40, JSON 0.41, restraint 0/18, p50/p95 1.347/5.431 s, llama-server 3613.7 MB, 31.5 tok/s.
+1.7B with no placeholders: 1/50, tool accuracy 0.40, JSON 0.558, restraint 1/18, p50/p95 4.519/11.448 s, llama-server 7855.5 MB, 15.6 tok/s.
+Held-out slice 1.7B, 3 tasks: 0/3, JSON 0.50, p50 9.192 s, llama-server 4543.6 MB, 14.8 tok/s.
+Teacher smoke, 1.7B, local Ollama: seen 2, accepted 0, dropped 2.
 <!-- CPU_EVAL_END -->
 
 Metrics: task success, tool-call accuracy, JSON validity, restraint (ASK_USER, ineligible roles, refusal to submit), p50/p95 latency, tokens/s when the server reports usage, and peak RAM.
@@ -192,7 +189,7 @@ Metrics: task success, tool-call accuracy, JSON validity, restraint (ASK_USER, i
 
 Week 1, this tree: repo, init, profile, tracker, Simplify-first feeds plus optional Greenhouse and Lever, snapshot save/load/freeze, MCP, the agent loop, 50 hand-checked tasks, and CI.
 
-Week 2, started: 300 synthetic profiles and a frozen snapshot of 1,857 recent public postings are in the repo. Still open: teacher traces from a cloud model on the same harness, and a larger held-out set (the plan's target is about 200 tasks plus a 30-task trap set). Keep a trace only when the checker passes. Include restraint cases. Scrub anything that is not fictional. The canary string stays in the data so a real profile cannot be mixed in by accident. Never train on `~/.pocket-agent/`.
+Week 2, started: 300 synthetic profiles, a frozen snapshot of 1,857 postings, 230 held-out tasks, and `pocket-agent teach`. A cloud teacher has not been run. Keep a trace only when the checker passes. The canary stays in the data. Never train on `~/.pocket-agent/`. The narrative of the build is `docs/JOURNEY.md`.
 
 Week 3: LoRA SFT. On a Mac, `mlx_lm.lora`. On NVIDIA or Colab, TRL SFT or Unsloth. Quantize, export, and run the same eval again. Optional GRPO where the reward is the programmatic checker: task success, valid tool JSON, and restraint.
 

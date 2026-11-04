@@ -99,4 +99,28 @@ No GitHub token was created to get around that. `origin` was not force-pushed. I
 
 Those are the same file. `/opt/cursor/artifacts` is a symlink to the agent store artifacts directory. The frozen snapshot did not push the bundle over 25 MB. It is 325 KB.
 
-Later entries will record the harness change aimed at the copied example sentence, the 0.6B rerun, a 1.7B run if this VM can hold it, the held-out task set, and the teacher-trace script.
+## 2026-11-03 evening — the copied sentence, then the copied placeholder
+
+The harness change is in the commits that start at "Stop small models from copying an example answer." The fluent example was deleted. If a request needs a tool and the model answers first, the loop sends one correction naming a tool. Refusals to submit are not corrected, because those tasks are supposed to stop.
+
+Three measurements on the same 50 tasks, `qwen3:0.6b`, native `/api/chat`, thinking off:
+
+| Prompt | Success | Tool accuracy | JSON valid | Restraint | p50 / p95 | llama-server | tokens/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Example sentence included | 2/50 | 0.40 | 1.0 | 2/18 | 0.449 s / 0.622 s | 1112.5 MB | 45.1 |
+| Sentence gone, the word `FIELD` still in the prompt | 1/50 | 0.48 | 0.84 | 0/18 | 0.410 s / 3.040 s | 2057.3 MB | 32.3 |
+| No placeholder tokens | 1/50 | 0.40 | 0.41 | 0/18 | 1.347 s / 5.431 s | 3613.7 MB | 31.5 |
+
+The middle run is the interesting one. Tool accuracy went from 0.40 to 0.48, and the trace contained real `profile_get` (3 tasks), `fetch_feed` (2), and `score_fit` (2). The model also wrote `missing_fields: ["FIELD"]`, copying the placeholder that had replaced the example sentence. Taking the placeholders out stopped that copy and also stopped most JSON. Validity fell to 0.41. The one pass was `prefill-auth`. A 0.6B model on this prompt either copies an example or fails to emit JSON. It does not yet follow "call search_jobs."
+
+`qwen3:1.7b` was pulled (1.4 GB) and the VM held it. Same 50 tasks, no placeholder tokens: **1/50**, tool accuracy 0.40, JSON validity 0.558, restraint 1/18, p50/p95 **4.519 s / 11.448 s**, eval RSS 39.0 MB, llama-server **7855.5 MB**, 4,228 completion tokens, **15.6** tokens/s. The pass was `trap-notice`. On the missing-info items it did ask, and the field names were `salary`, `protected_veteran`, and `disability`. The checker wanted `salary_expectation`, `veteran_status`, and `disability_status`, so those turns were marked wrong. One `search_jobs` call happened in the whole suite. The weights fit. The behavior is not a tool-using agent yet.
+
+## Held-out set and the teacher script
+
+`pocket-agent eval --suite heldout` builds 230 tasks: 60 find, 60 screen, 40 track, 40 prefill, 30 traps. Jobs come from the 1,857-row snapshot. Profiles come from `generate_profiles(240, seed=428)`, not from Jordan Hale. Screen labels are whatever `score_fit` returns for that pair. `pytest` runs gold tool traces for one task of each kind; those pass. A 3-task CPU slice on `qwen3:1.7b` scored 0/3. The companies were 66 Degrees, ASML, and AbbVie. JSON validity 0.50, p50 9.192 s, llama-server 4543.6 MB, 14.8 tokens/s. The other 227 were not run on CPU.
+
+`pocket-agent teach` is the Week 2 collector. It refuses to start without `POCKET_AGENT_TEACHER_BASE_URL` and `POCKET_AGENT_TEACHER_MODEL`. A URL on port 11434 uses native Ollama chat, because the OpenAI shim on this build returns empty `content`. Any other URL is `POST {base}/chat/completions` with `POCKET_AGENT_TEACHER_API_KEY`. Traces that fail the checker are dropped. Emails, phone numbers, and the profile name are replaced. The canary stays. A local run, base `http://127.0.0.1:11434/v1`, model `qwen3:1.7b`, smoke suite, limit 2: seen 2, accepted 0, dropped 2. No paid API was called.
+
+`pytest` after these changes: 22 passed.
+
+The GitHub push is still the same error (`could not read Username for 'https://github.com'`). The bundle was refreshed after these commits. `/opt/cursor/artifacts/pocket_agent.bundle` and the agent-store copy are the same file, because `/opt/cursor/artifacts` is a symlink into the store.
