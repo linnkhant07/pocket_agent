@@ -660,4 +660,8 @@ def tasks_for_suite(suite: str) -> list[dict[str, Any]]:
     if suite == "smoke":
         wanted = set(SMOKE_IDS)
         return [task for task in tasks if task["id"] in wanted]
+    if suite == "heldout":
+        from pocket_agent.eval.heldout import heldout_tasks
+
+        return heldout_tasks()
     raise ValueError(f"unknown suite {suite!r}")

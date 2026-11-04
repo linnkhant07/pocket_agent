@@ -15,7 +15,7 @@ from pocket_agent.eval.checker import check_task, json_validity, tool_accuracy
 from pocket_agent.eval.tasks import EVAL_TODAY, tasks_for_suite
 from pocket_agent.harness.backend import backend_for
 from pocket_agent.harness.loop import run_agent
-from pocket_agent.paths import CANARY, examples_dir, resources_dir
+from pocket_agent.paths import CANARY, examples_dir, repo_root, resources_dir
 from pocket_agent.profile import deep_merge, dump_profile, load_profile
 from pocket_agent.snapshot import job_from_public
 from pocket_agent.tools import ToolContext
@@ -80,17 +80,36 @@ def _run_one(task: dict[str, Any], *, backend: str, model: str, base_url: str | 
 
 def _prepare_home(home: Path, task: dict[str, Any]) -> None:
     home.mkdir(parents=True, exist_ok=True)
-    profile = load_profile(examples_dir() / "profile.yaml")
-    if task.get("profile_overlay"):
-        profile = deep_merge(profile, task["profile_overlay"])
+    if task.get("profile"):
+        profile = task["profile"]
+    else:
+        profile = load_profile(examples_dir() / "profile.yaml")
+        if task.get("profile_overlay"):
+            profile = deep_merge(profile, task["profile_overlay"])
     dump_profile(home / "profile.yaml", profile)
-    if task.get("setup") != "empty":
-        tracker = Tracker(home / "tracker.db")
+    setup = task.get("setup")
+    if setup == "empty":
+        Tracker(home / "tracker.db").close()
+        return
+    tracker = Tracker(home / "tracker.db")
+    if setup == "snapshot":
+        from pocket_agent.snapshot import load_snapshot
+
+        load_snapshot(tracker, snapshot_path())
+    else:
         jobs = [job_from_public(item) for item in _load_json("fixture_jobs.json")]
         tracker.upsert_jobs(jobs, include_inactive=True)
-        tracker.close()
-    else:
-        Tracker(home / "tracker.db").close()
+    tracker.close()
+
+
+def snapshot_path() -> Path:
+    root = repo_root()
+    if root is None:
+        raise FileNotFoundError("the frozen snapshot is shipped in the repo checkout")
+    path = root / "data" / "snapshots" / "public_postings.jsonl"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return path
 
 
 def _feed_fixtures() -> dict[str, Any]:

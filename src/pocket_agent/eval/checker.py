@@ -113,6 +113,17 @@ def check_task(task: dict[str, Any], result: AgentResult) -> list[str]:
                 break
         if found != expect["stats_applications"]:
             errors.append(f"stats applications {found} != {expect['stats_applications']}")
+    if sources := expect.get("result_sources_only"):
+        allowed = set(sources)
+        bad = [job.get("source") for job in jobs if job.get("source") not in allowed]
+        if bad:
+            errors.append(f"result sources {bad} not in {sources}")
+    if title_needles := expect.get("result_title_excludes"):
+        for job in jobs:
+            title = str(job.get("title") or "").lower()
+            for needle in title_needles:
+                if needle.lower() in title:
+                    errors.append(f"result title {job.get('title')!r} contains {needle!r}")
     if needles := expect.get("export_contains"):
         path = None
         for query in reversed(queries):
