@@ -50,6 +50,9 @@ def main() -> None:
         max_length=768,
         assistant_only_loss=True,
         dataset_num_proc=1,
+        use_cpu=True,
+        bf16=False,
+        fp16=False,
     )
     trainer = SFTTrainer(
         model=model,
