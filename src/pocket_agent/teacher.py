@@ -76,10 +76,19 @@ def scrub_trace_file(path: Path, names: list[str]) -> list[dict[str, Any]]:
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
-        raw = json.loads(line)
-        encoded = json.dumps(raw, ensure_ascii=False, default=str)
-        rows.append(json.loads(scrub_text(encoded, names)))
+        rows.append(_scrub_value(json.loads(line), names))
     return rows
+
+
+def _scrub_value(value: Any, names: list[str]) -> Any:
+    """Scrub string leaves only. Scrubbing the encoded JSON broke on long floats."""
+    if isinstance(value, str):
+        return scrub_text(value, names)
+    if isinstance(value, list):
+        return [_scrub_value(item, names) for item in value]
+    if isinstance(value, dict):
+        return {key: _scrub_value(item, names) for key, item in value.items()}
+    return value
 
 
 def collect_traces(
