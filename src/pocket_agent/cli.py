@@ -25,6 +25,7 @@ from pocket_agent.resume_pdf import write_simple_pdf
 from pocket_agent.scoring import score_fit
 from pocket_agent.snapshot import load_snapshot, save_snapshot
 from pocket_agent.synthetic import write_profiles
+from pocket_agent.teacher import collect_traces, teacher_settings_from_env
 from pocket_agent.tools import TOOL_NAMES, ToolContext, execute
 from pocket_agent.tracker import Tracker
 
@@ -134,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     synth.set_defaults(func=cmd_synth)
 
     evaluate = sub.add_parser("eval", help="Run the hand-checked task suite")
-    evaluate.add_argument("--suite", choices=["week1", "smoke"], default="week1")
+    evaluate.add_argument("--suite", choices=["week1", "smoke", "heldout"], default="week1")
     evaluate.add_argument("--backend", choices=["mock", "ollama", "llamacpp", "mlx"], default="mock")
     evaluate.add_argument("--model", default="mock")
     evaluate.add_argument("--base-url")
@@ -143,6 +144,12 @@ def main(argv: list[str] | None = None) -> int:
     evaluate.add_argument("--out", type=Path)
     evaluate.add_argument("--label")
     evaluate.set_defaults(func=cmd_eval)
+
+    teach = sub.add_parser("teach", help="Run the harness on a teacher model and keep traces that pass")
+    teach.add_argument("--suite", choices=["week1", "smoke", "heldout"], default="smoke")
+    teach.add_argument("--limit", type=int)
+    teach.add_argument("--out", type=Path, required=True)
+    teach.set_defaults(func=cmd_teach)
 
     sub.add_parser("mcp", help="Serve tools over MCP stdio").set_defaults(func=cmd_mcp)
     sub.add_parser("tools", help="List tool names").set_defaults(func=cmd_tools)
@@ -437,6 +444,20 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print(f"wrote {args.out}")
     if report.get("failed_threshold"):
         return 1
+    return 0
+
+
+def cmd_teach(args: argparse.Namespace) -> int:
+    settings = teacher_settings_from_env()
+    summary = collect_traces(
+        suite=args.suite,
+        out=args.out,
+        limit=args.limit,
+        base_url=settings["base_url"],
+        model=settings["model"],
+        api_key=settings["api_key"],
+    )
+    print(summary)
     return 0
 
 

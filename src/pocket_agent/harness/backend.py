@@ -160,7 +160,14 @@ class MockBackend:
         return Completion(text=text, latency_s=0.0, prompt_tokens=1, completion_tokens=max(1, len(text) // 4))
 
 
-def backend_for(name: str, *, base_url: str | None = None, model: str | None = None, script: list[str] | None = None) -> Any:
+def backend_for(
+    name: str,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    script: list[str] | None = None,
+    api_key: str | None = None,
+) -> Any:
     key = (name or "ollama").lower()
     if key == "mock":
         return MockBackend(script or [])
@@ -170,11 +177,18 @@ def backend_for(name: str, *, base_url: str | None = None, model: str | None = N
         "llama.cpp": "http://127.0.0.1:8080/v1",
         "mlx": "http://127.0.0.1:8080/v1",
     }
+    if key == "openai":
+        if not base_url:
+            raise ValueError("an OpenAI-compatible base URL is required")
+        return OpenAICompatBackend(base_url=base_url, api_key=api_key or "EMPTY")
     if key not in defaults:
         raise ValueError(f"unknown backend {name!r}")
     if key == "ollama":
         return OllamaBackend(base_url=base_url or defaults[key])
-    return OpenAICompatBackend(base_url=base_url or defaults[key])
+    client = OpenAICompatBackend(base_url=base_url or defaults[key])
+    if api_key:
+        client.api_key = api_key
+    return client
 
 
 def _tool_call_to_action(tool_call: dict[str, Any]) -> str:
