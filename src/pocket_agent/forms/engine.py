@@ -30,9 +30,14 @@ class Asked:
     key: str
     label: str
     question: str
+    kind: str = "text"
+    options: tuple[str, ...] = ()
+    sensitive: bool = False
+    section: str = ""
 
 
 AskFn = Callable[[Asked], UserAnswer]
+EventFn = Callable[[dict], None]
 
 
 @dataclass
@@ -59,13 +64,25 @@ class FormRun:
     model_seconds: float = 0.0
 
 
-def fill_form(page, url: str, memory: Memory, resume_path: Path | None, ask: AskFn, llm=None) -> FormRun:
+def fill_form(
+    page,
+    url: str,
+    memory: Memory,
+    resume_path: Path | None,
+    ask: AskFn,
+    llm=None,
+    *,
+    events: EventFn | None = None,
+    navigate: bool = True,
+) -> FormRun:
     run = FormRun(url=url)
     try:
         page.set_default_timeout(8000)
-        page.add_init_script(_INIT)
-        page.goto(url, wait_until="domcontentloaded")
+        if navigate:
+            page.add_init_script(_INIT)
+            page.goto(url, wait_until="domcontentloaded")
         handled: set[tuple[str, str, int]] = set()
+        heading = ""
         for step_index in range(48):
             snap = _wait_ready(page) if step_index == 0 else extract_page(page)
             if snap.gate:
@@ -80,9 +97,13 @@ def fill_form(page, url: str, memory: Memory, resume_path: Path | None, ask: Ask
                 continue
             field = _next_field(snap, handled)
             if field is not None:
+                if field.heading and field.heading != heading:
+                    heading = field.heading
+                    _emit(events, {"type": "step", "heading": heading})
                 outcome = _decide_and_write(page, field, memory, resume_path, ask, llm, run)
                 handled.add((field.section, field.label.casefold(), field.group))
                 run.outcomes.append(outcome)
+                _emit(events, _activity_event(memory, outcome, field.heading))
                 continue
             if not _advance(page, snap):
                 break
@@ -91,7 +112,49 @@ def fill_form(page, url: str, memory: Memory, resume_path: Path | None, ask: Ask
             run.submits = max(run.submits, 1)
     except Exception as exc:  # noqa: BLE001 — the eval harness records crashes per form
         run.error = f"{type(exc).__name__}: {exc}"
+    counts = review_counts(run.outcomes)
+    if run.gate:
+        _emit(events, {"type": "gate", "gate": run.gate, **counts, "submits": run.submits})
+    elif run.error:
+        _emit(events, {"type": "error", "message": run.error})
+    else:
+        _emit(events, {"type": "review", **counts, "submits": run.submits})
     return run
+
+
+def review_counts(outcomes: list[FieldOutcome]) -> dict[str, int]:
+    filled = sum(1 for item in outcomes if item.action == "fill" and item.value and not item.asked)
+    asked = sum(1 for item in outcomes if item.asked)
+    skipped = sum(1 for item in outcomes if item.action == "skip")
+    return {"filled": filled, "asked": asked, "skipped": skipped}
+
+
+def activity_source(memory: Memory, outcome: FieldOutcome) -> str:
+    if outcome.via_model:
+        return "model"
+    if outcome.asked:
+        return "answer"
+    entry = memory.get(outcome.key) if outcome.key else None
+    if entry is not None and entry.source == "resume":
+        return "resume"
+    return "memory"
+
+
+def _emit(events: EventFn | None, payload: dict) -> None:
+    if events is not None:
+        events(payload)
+
+
+def _activity_event(memory: Memory, outcome: FieldOutcome, heading: str) -> dict:
+    return {
+        "type": "activity",
+        "label": outcome.label,
+        "action": outcome.action,
+        "value": outcome.value,
+        "source": activity_source(memory, outcome),
+        "heading": heading,
+        "asked": outcome.asked,
+    }
 
 
 def _wait_ready(page) -> PageSnapshot:
@@ -202,7 +265,15 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str) -> FieldOutco
         written = _write(page, field, entry.value, resume_path)
         if written:
             return _outcome(field, key, "fill", written, asked=False, from_memory=True)
-    answer = ask(Asked(key, field.label, question_for(field.label)))
+    answer = ask(Asked(
+        key,
+        field.label,
+        question_for(field.label),
+        kind=field.kind,
+        options=tuple(option["label"] for option in field.options if option.get("label")),
+        sensitive=sensitive,
+        section=field.heading or field.section,
+    ))
     memory.put(
         key,
         answer.value,

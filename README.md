@@ -40,6 +40,23 @@ uv run pocket-agent eval-forms --suite hard --runs 3 --model 0.6b --out form-eva
 
 `--suite` is `easy` (29 short forms), `hard` (20 forms shaped like Workday, Taleo, Oracle, Greenhouse, and custom pages), or `both`. Companies and the applicant are invented. It does not open a real job site.
 
+### Local desk
+
+`pocket-agent ui` serves a chat page on `http://127.0.0.1:8765` and opens it. The host is localhost only. There is no account and no external asset host. Paste an application link and press Start. The filler uses its own Chromium window, headed unless "Run the form window in the background" is checked. Questions show up as chat bubbles. Review ends with the counts and the line "Review the form in the browser window and click Submit yourself." My answers edits the profile, the resume, and saved memory. Settings picks `0.6b` (the default), `1.7b`, `4b`, or `none`, and shows whether that GGUF is on disk.
+
+```bash
+uv run pocket-agent ui
+uv run pocket-agent ui --port 8765 --no-open
+```
+
+![Home](/opt/cursor/artifacts/ui-home.png)
+
+![Question](/opt/cursor/artifacts/ui-question.png)
+
+![Review](/opt/cursor/artifacts/ui-review.png)
+
+![My answers](/opt/cursor/artifacts/ui-answers.png)
+
 ### Form-suite results
 
 Linux, 4 cores, 15.6 GB RAM, no GPU, Chromium headless. Applicant is the fictional Jordan Hale profile plus a second fictional job. RSS is Python plus Chromium, and includes the GGUF when one is loaded.
