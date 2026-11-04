@@ -167,8 +167,15 @@ def backend_for(
     model: str | None = None,
     script: list[str] | None = None,
     api_key: str | None = None,
+    adapter_path: str | None = None,
 ) -> Any:
     key = (name or "ollama").lower()
+    if key == "transformers":
+        from pocket_agent.harness.transformers_backend import TransformersBackend
+
+        if not model:
+            raise ValueError("transformers backend needs --model pointing at a Hugging Face id or local directory")
+        return TransformersBackend(model, adapter_path=adapter_path)
     if key == "mock":
         return MockBackend(script or [])
     defaults = {

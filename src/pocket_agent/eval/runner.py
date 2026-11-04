@@ -31,15 +31,19 @@ def run_eval(
     limit: int | None = None,
     fail_under: float | None = None,
     label: str | None = None,
+    adapter: str | None = None,
 ) -> dict[str, Any]:
     tasks = tasks_for_suite(suite)
     if limit is not None:
-        tasks = tasks[:limit]
+        tasks = _limit_tasks(suite, tasks, limit)
+    shared = None
+    if backend != "mock":
+        shared = backend_for(backend, base_url=base_url, model=model, adapter_path=adapter)
     ollama_peak = _model_server_rss_mb()
     rows = []
     for task in tasks:
         ollama_peak = max(ollama_peak, _model_server_rss_mb())
-        rows.append(_run_one(task, backend=backend, model=model, base_url=base_url))
+        rows.append(_run_one(task, backend=backend, model=model, base_url=base_url, client=shared, adapter=adapter))
         ollama_peak = max(ollama_peak, _model_server_rss_mb())
     report = _summarize(rows, suite=suite, backend=backend, model=model, label=label)
     report["peak_rss_mb"] = _peak_rss_mb()
@@ -51,12 +55,53 @@ def run_eval(
     return report
 
 
-def _run_one(task: dict[str, Any], *, backend: str, model: str, base_url: str | None) -> dict[str, Any]:
+def _limit_tasks(suite: str, tasks: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Held-out slices keep trap tasks. Other suites keep the prefix."""
+    if suite != "heldout":
+        return tasks[:limit]
+    traps = [task for task in tasks if task["id"].startswith("trap-")]
+    rest = [task for task in tasks if not task["id"].startswith("trap-")]
+    trap_n = min(len(traps), max(12, limit // 4))
+    rest_n = max(0, limit - trap_n)
+    by_skill: dict[str, list[dict[str, Any]]] = {}
+    for task in rest:
+        by_skill.setdefault(task["skill"], []).append(task)
+    picked: list[dict[str, Any]] = []
+    skills = list(by_skill)
+    cursor = 0
+    while len(picked) < rest_n and skills:
+        skill = skills[cursor % len(skills)]
+        bucket = by_skill[skill]
+        if bucket:
+            picked.append(bucket.pop(0))
+        cursor += 1
+        if all(not bucket for bucket in by_skill.values()):
+            break
+    picked.extend(traps[:trap_n])
+    return picked[:limit]
+
+
+def _run_one(
+    task: dict[str, Any],
+    *,
+    backend: str,
+    model: str,
+    base_url: str | None,
+    client: Any = None,
+    adapter: str | None = None,
+) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="pocket-eval-") as temporary:
         home = Path(temporary)
         _prepare_home(home, task)
         ctx = ToolContext(home=home, today=EVAL_TODAY, network=False, fixtures=_feed_fixtures())
-        client = backend_for(backend, base_url=base_url, model=model, script=task["script"] if backend == "mock" else None)
+        if client is None:
+            client = backend_for(
+                backend,
+                base_url=base_url,
+                model=model,
+                script=task["script"] if backend == "mock" else None,
+                adapter_path=adapter,
+            )
         trace_path = home / "traces" / f"{task['id']}.jsonl"
         result = run_agent(task["prompt"], client, ctx, model=model, trace_path=trace_path)
         errors = check_task(task, result)

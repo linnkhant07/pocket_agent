@@ -136,8 +136,9 @@ def main(argv: list[str] | None = None) -> int:
 
     evaluate = sub.add_parser("eval", help="Run the hand-checked task suite")
     evaluate.add_argument("--suite", choices=["week1", "smoke", "heldout"], default="week1")
-    evaluate.add_argument("--backend", choices=["mock", "ollama", "llamacpp", "mlx"], default="mock")
+    evaluate.add_argument("--backend", choices=["mock", "ollama", "llamacpp", "mlx", "transformers"], default="mock")
     evaluate.add_argument("--model", default="mock")
+    evaluate.add_argument("--adapter", help="LoRA adapter directory for the transformers backend")
     evaluate.add_argument("--base-url")
     evaluate.add_argument("--limit", type=int)
     evaluate.add_argument("--fail-under", type=float)
@@ -437,6 +438,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         limit=args.limit,
         fail_under=args.fail_under,
         label=args.label,
+        adapter=args.adapter,
     )
     print(format_report(report))
     if args.out:
