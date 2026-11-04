@@ -174,6 +174,21 @@ The first run's passes were ASK_USER for salary and notice period. The other ans
 
 `pocket-agent teach` needs `POCKET_AGENT_TEACHER_BASE_URL` and `POCKET_AGENT_TEACHER_MODEL`. A local run at `http://127.0.0.1:11434/v1` with `qwen3:1.7b` saw 2 smoke tasks, accepted 0, dropped 2. Port 11434 uses native Ollama chat. No paid API was called.
 
+### LoRA on the gold traces
+
+The checker was not loosened. `ask_user.missing_fields` is taught the canonical names (`salary_expectation`, `veteran_status`, `disability_status`, `notice_period`, `willing_to_travel`, `references`, `demographic`) in the tool description and in 68 scripted gold traces. Those traces use seed 7 and profile indexes 5000 and up, job ids `train:*`, and prompts that do not match week 1 or the 230 held-out tasks. A unit test checks that split.
+
+Training was TRL + PEFT on CPU: Qwen3-0.6B, LoRA rank 8 on the attention projections, 40 steps, assistant-only loss, 1,008 seconds, final logged train loss 0.2879. The adapter file is 9,204,512 bytes at `/opt/cursor/artifacts/pocket-qwen3-0.6b-lora`. It is not in git. Reproduce with `python scripts/train_lora_cpu.py --output <dir> --max-steps 40`. Apple Silicon uses `scripts/train_mlx_lora.sh`, which was not run here. An 8B local teacher was not run: the earlier 1.7B Ollama process had already reached 7.9 GB RSS, and the CPU trainer needed the memory. 1.7B was not fine-tuned.
+
+Eval below is the transformers backend, greedy, at most 96 new tokens. Base and tuned saw the same prompts. The held-out slice is 60 tasks, 15 of them traps, chosen the same way both times.
+
+| Run | Week 1 | Held-out 60 | Tool accuracy | JSON valid | Restraint | p50 / p95 | Process RSS | tokens/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Base Qwen3-0.6B | 3/50 | 5/60 | 0.40 / 0.367 | 0.767 / 0.742 | 3/18 and 3/26 | week1 2.739 s / 13.243 s | 4742 MB | 10.4 / 11.7 |
+| LoRA Qwen3-0.6B | 11/50 | 43/60 | 0.82 / 0.867 | 0.81 / 0.928 | 8/18 and 26/26 | week1 4.907 s / 14.053 s; held-out 7.234 s / 16.070 s | 4742 MB | 10.4 / 9.8 |
+
+The older Ollama number, before this prompt listed the canonical field names, was 1/50 on week 1. The LoRA model passed every trap in the 60-task slice. Held-out p50/p95 for the base was 6.415 s / 17.308 s. Completion tokens were 2,717 and 5,903 for the base runs, 3,095 and 4,575 for the tuned runs.
+
 <!-- CPU_EVAL_START -->
 0.6B with example sentence: 2/50, tool accuracy 0.40, JSON 1.0, restraint 2/18, p50/p95 0.449/0.622 s, llama-server 1112.5 MB, 45.1 tok/s.
 0.6B with FIELD placeholder: 1/50, tool accuracy 0.48, JSON 0.84, restraint 0/18, p50/p95 0.410/3.040 s, llama-server 2057.3 MB, 32.3 tok/s.

@@ -123,4 +123,23 @@ The middle run is the interesting one. Tool accuracy went from 0.40 to 0.48, and
 
 `pytest` after these changes: 22 passed.
 
-The GitHub push is still the same error (`could not read Username for 'https://github.com'`). The bundle was refreshed after these commits. `/opt/cursor/artifacts/pocket_agent.bundle` and the agent-store copy are the same file, because `/opt/cursor/artifacts` is a symlink into the store.
+The GitHub push is still the same error (`could not read Username for 'https://github.com'`). `/opt/cursor/artifacts` is a symlink into the agent store, so the bundle path and the store path are one file.
+
+## 2026-11-03 night — gold traces and a CPU LoRA, no paid teacher
+
+Linn's constraint for this run was free teachers only. The 1.7B Ollama process had already been measured at 7,855.5 MB RSS, so an 8B teacher was not started. The training signal is 68 scripted gold traces, the same shape the harness feeds the model: system prompt, user task, assistant JSON, then `TOOL_RESULT` user turns. They are not the week-1 tasks and not the 230 held-out tasks. Profiles come from `generate_profiles` with seed 7 starting at index 5000. Job ids are `train:*` at fictional companies (Keel Analytics, Brass Lantern, and four others). A test asserts the email set, the prompt strings, and the job ids are disjoint from week 1 and held-out.
+
+Field names: the checker still requires `salary_expectation`, `veteran_status`, `disability_status`, `notice_period`, `willing_to_travel`, `references`, and `demographic`. The ask_user tool description now lists those names, and the gold traces use them. The checker was not given aliases. A pass means the model emitted the name the tool already documented.
+
+TRL 1.17 and PEFT 0.21 trained Qwen3-0.6B on CPU (`use_cpu=True`, fp32, LoRA rank 8 on q/k/v/o, 40 steps, assistant-only loss, max length 768). The run logged `train_runtime` 1008 seconds, `train_loss` 0.2879, and a last `mean_token_accuracy` of 0.9953. `adapter_model.safetensors` is 9,204,512 bytes under `/opt/cursor/artifacts/pocket-qwen3-0.6b-lora`. It is not committed. `scripts/train_mlx_lora.sh` is the Mac path and was not executed. 1.7B was not fine-tuned; the 0.6B train plus four eval passes used the hour.
+
+Eval used a transformers backend, greedy, capped at 96 new tokens, same cap for base and adapter. Process RSS was about 4,742 MB because the weights sit in the eval process. Ollama was stopped before training.
+
+| | Week 1 | Held-out slice (60, including 15 traps) | Tool accuracy | JSON valid | Restraint |
+| --- | --- | --- | --- | --- | --- |
+| Base, this prompt | 3/50 | 5/60 | 0.40 and 0.367 | 0.767 and 0.742 | 3/18 and 3/26 |
+| LoRA | 11/50 | 43/60 | 0.82 and 0.867 | 0.81 and 0.928 | 8/18 and 26/26 |
+
+Base week-1 latency p50/p95 was 2.739 s / 13.243 s, 10.4 tokens/s, 2,717 completion tokens. Base held-out was 6.415 s / 17.308 s, 11.7 tokens/s, 5,903 tokens. Tuned week-1 was 4.907 s / 14.053 s, 10.4 tokens/s, 3,095 tokens. Tuned held-out was 7.234 s / 16.070 s, 9.8 tokens/s, 4,575 tokens. The held-out slice's 15 trap tasks all passed after LoRA. Restraint on that slice was 26/26. The earlier Ollama week-1 number, before the prompt listed the canonical fields, remains 1/50.
+
+The week-1 gain is real and smaller than the held-out gain. Week 1 asks for specific phrases about Contoso, Northwind, and Austin. The gold traces never saw those strings. The held-out companies were also unseen, and the format transferred anyway.
