@@ -9,7 +9,7 @@ from typing import Callable
 from pocket_agent.forms.guard import classify_button, progress_is_last
 from pocket_agent.forms.match import indexed_key, match_label, section_of, suggestions
 from pocket_agent.forms.memory import Memory
-from pocket_agent.forms.policy import is_sensitive_key, question_for, sensitive_key
+from pocket_agent.forms.policy import ask_key, is_sensitive_key, question_for
 from pocket_agent.forms.reader import ExtractedField, PageSnapshot, extract_page
 from pocket_agent.forms.values import date_variants, is_blank, present_value
 
@@ -45,6 +45,7 @@ class FieldOutcome:
     value: str
     asked: bool
     from_memory: bool
+    via_model: bool = False
 
 
 @dataclass
@@ -53,6 +54,9 @@ class FormRun:
     outcomes: list[FieldOutcome] = field(default_factory=list)
     submits: int = 0
     error: str | None = None
+    gate: str = ""
+    model_calls: int = 0
+    model_seconds: float = 0.0
 
 
 def fill_form(page, url: str, memory: Memory, resume_path: Path | None, ask: AskFn, llm=None) -> FormRun:
@@ -62,15 +66,24 @@ def fill_form(page, url: str, memory: Memory, resume_path: Path | None, ask: Ask
         page.add_init_script(_INIT)
         page.goto(url, wait_until="domcontentloaded")
         handled: set[tuple[str, str, int]] = set()
-        for _step in range(8):
-            snap = _wait_ready(page)
+        for step_index in range(48):
+            snap = _wait_ready(page) if step_index == 0 else extract_page(page)
+            if snap.gate:
+                run.gate = snap.gate
+                break
             _dismiss(page, snap)
             snap = extract_page(page)
+            if snap.gate:
+                run.gate = snap.gate
+                break
             if _grow_work(page, memory, snap):
-                snap = extract_page(page)
-            _fill_snapshot(page, snap, memory, resume_path, ask, llm, run, handled)
-            snap = extract_page(page)
-            _fill_snapshot(page, snap, memory, resume_path, ask, llm, run, handled)
+                continue
+            field = _next_field(snap, handled)
+            if field is not None:
+                outcome = _decide_and_write(page, field, memory, resume_path, ask, llm, run)
+                handled.add((field.section, field.label.casefold(), field.group))
+                run.outcomes.append(outcome)
+                continue
             if not _advance(page, snap):
                 break
         run.submits = int(page.evaluate("() => window.__pocketSubmits || 0") or 0)
@@ -140,75 +153,105 @@ def _add_button(snap: PageSnapshot):
     return None
 
 
-def _fill_snapshot(page, snap, memory, resume_path, ask, llm, run: FormRun, handled: set[tuple[str, str, int]]) -> None:
+def _next_field(snap: PageSnapshot, handled: set[tuple[str, str, int]]) -> ExtractedField | None:
+    pending = []
     for field in snap.fields:
-        identity = (field.section, field.label.casefold(), field.group)
-        if identity in handled:
+        if (field.section, field.label.casefold(), field.group) in handled:
             continue
-        if field.kind != "checkbox" and not is_blank(field.value):
-            handled.add(identity)
-            continue
-        outcome = _decide_and_write(page, field, memory, resume_path, ask, llm)
-        handled.add(identity)
-        run.outcomes.append(outcome)
+        pending.append(field)
+    files = [field for field in pending if field.kind == "file"]
+    return files[0] if files else (pending[0] if pending else None)
 
 
-def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, ask: AskFn, llm) -> FieldOutcome:
+def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, ask: AskFn, llm, run: FormRun) -> FieldOutcome:
+    forced = ask_key(field.label, field.section)
+    if forced:
+        return _ask_or_saved(page, field, memory, resume_path, ask, forced)
+    if field.kind == "checkbox" and not field.required and ask_key(field.label, field.section):
+        return _outcome(field, None, "skip", "", asked=False, from_memory=False)
     learned = memory.learned_labels()
     match = match_label(field.label, section=field.section, learned=learned)
-    base = match.key if match else sensitive_key(field.label)
+    base = match.key if match and match.score >= 0.93 and not is_sensitive_key(match.key) else None
     key = indexed_key(base, field.group) if base else None
-    sensitive = is_sensitive_key(base) or sensitive_key(field.label) is not None
-    if sensitive and key:
-        entry = memory.get(key)
-        if entry and entry.always_use and entry.value.strip():
-            written = _write(page, field, entry.value, resume_path)
-            return _outcome(field, key, "fill" if written else "skip", written, asked=False, from_memory=True)
-        answer = ask(Asked(key, field.label, question_for(field.label)))
-        memory.put(key, answer.value, always_use=answer.always_use, sensitive=True, source="answer", label=field.label)
-        written = _write(page, field, answer.value, resume_path) if answer.value.strip() else ""
-        return _outcome(field, key, "ask", written, asked=True, from_memory=False)
-    if match and match.score >= 0.93 and key and memory.has_value(key):
-        written = _write(page, field, memory.get(key).value, resume_path)  # type: ignore[union-attr]
+    value = stored_value(memory, key, field.label) if key else ""
+    ruled = bool(key and value.strip() and match and match.reason in {"exact", "tokens", "subset", "learned"})
+    agreed = False
+    if ruled and llm is not None and getattr(llm, "available", False) and match is not None and match.reason != "exact":
+        import time
+        started = time.perf_counter()
+        agreed = _llm_fill(field, memory, llm) == key
+        run.model_calls += 1
+        run.model_seconds += time.perf_counter() - started
+    if ruled:
+        written = _write(page, field, value, resume_path)
         if written:
-            return _outcome(field, key, "fill", written, asked=False, from_memory=True)
-        return _outcome(field, key, "ask" if field.required else "skip", "", asked=field.required, from_memory=False)
-    if llm is not None and getattr(llm, "available", False) and not sensitive:
-        choice = _llm_fill(field, memory, llm)
-        if choice is not None:
-            written = _write(page, field, memory.get(choice).value, resume_path)  # type: ignore[union-attr]
-            if written:
-                memory.remember_label(choice, field.label)
-                return _outcome(field, choice, "fill", written, asked=False, from_memory=True)
+            return _outcome(field, key, "fill", written, asked=False, from_memory=True, via_model=agreed)
+        if field.required:
+            return _ask_or_saved(page, field, memory, resume_path, ask, key or "unknown")
     if field.required:
-        answer_key = key or "unknown"
-        answer = ask(Asked(answer_key, field.label, question_for(field.label)))
-        if key and answer.value.strip():
-            memory.put(key, answer.value, always_use=answer.always_use, sensitive=False, source="answer", label=field.label)
-            written = _write(page, field, answer.value, resume_path)
-        else:
-            written = ""
-        return _outcome(field, key, "ask", written, asked=True, from_memory=False)
+        return _ask_or_saved(page, field, memory, resume_path, ask, key or "unknown")
+    if field.value and not is_blank(field.value):
+        _clear_field(page, field)
     return _outcome(field, key, "skip", "", asked=False, from_memory=False)
 
 
+def _ask_or_saved(page, field, memory, resume_path, ask, key: str) -> FieldOutcome:
+    entry = memory.get(key)
+    sensitive = is_sensitive_key(key) or ask_key(field.label, field.section) == key
+    if entry and entry.always_use and entry.value.strip():
+        written = _write(page, field, entry.value, resume_path)
+        if written:
+            return _outcome(field, key, "fill", written, asked=False, from_memory=True)
+    answer = ask(Asked(key, field.label, question_for(field.label)))
+    memory.put(
+        key,
+        answer.value,
+        always_use=answer.always_use,
+        sensitive=sensitive,
+        source="answer",
+        label=field.label,
+    )
+    written = _write(page, field, answer.value, resume_path) if answer.value.strip() else ""
+    if not written and field.value and not is_blank(field.value):
+        _clear_field(page, field)
+    return _outcome(field, key, "ask", written, asked=True, from_memory=False)
+
+
+def stored_value(memory: Memory, key: str | None, label: str) -> str:
+    if not key:
+        return ""
+    if key == "previously_employed_here":
+        low = label.casefold()
+        for mem_key in memory.keys():
+            if not mem_key.endswith(".org"):
+                continue
+            entry = memory.get(mem_key)
+            if entry and entry.value and entry.value.casefold() in low:
+                return "Yes"
+        return "No"
+    entry = memory.get(key)
+    return entry.value if entry and entry.value.strip() else ""
+
+
 def _llm_fill(field: ExtractedField, memory: Memory, llm) -> str | None:
-    ranked = suggestions(field.label, field.section, limit=5)
+    ranked = suggestions(field.label, field.section, limit=8)
     candidates = []
+    seen: set[str] = set()
     for base, score in ranked:
-        if score < 0.8:
+        if score < 0.2 or base in seen or is_sensitive_key(base):
             continue
+        seen.add(base)
         key = indexed_key(base, field.group)
-        entry = memory.get(key)
-        if entry and entry.value.strip() and not (entry.sensitive and not entry.always_use):
-            candidates.append((key, entry.value))
+        value = stored_value(memory, key, field.label)
+        if value.strip():
+            candidates.append((key, value))
     if not candidates:
         return None
     choice = llm.choose(
         label=field.label,
         kind=field.kind,
         options=[option["label"] for option in field.options],
-        candidates=candidates,
+        candidates=candidates[:6],
     )
     if choice is None or choice.action != "fill":
         return None
@@ -239,6 +282,8 @@ def _write(page, field: ExtractedField, raw: str, resume_path: Path | None) -> s
         page.wait_for_timeout(30)
         if not _invalid(page, field.uid):
             written = _read_back(page, field)
+            if written and set(written) <= set("•*"):
+                written = variant
             break
     return written
 
@@ -262,7 +307,41 @@ def _apply(page, field: ExtractedField, value: str) -> None:
         if match and match["uid"]:
             page.locator(f'[data-pocket-uid="{match["uid"]}"]').click()
         return
+    if field.kind == "typeahead":
+        root.click()
+        root.fill(value[:12])
+        page.wait_for_timeout(30)
+        if field.list_id:
+            page.evaluate(
+                """(id) => {
+                  const list = document.getElementById(id);
+                  const input = document.querySelector('[aria-controls="' + id + '"]');
+                  if (!list || !input) return;
+                  const query = (input.value || "").toLowerCase();
+                  list.hidden = false;
+                  list.querySelectorAll("[role=option]").forEach((item) => {
+                    item.hidden = query.length >= 2 && !(item.textContent || "").toLowerCase().includes(query);
+                  });
+                }""",
+                field.list_id,
+            )
+            choice = page.locator(f"#{field.list_id} [role=option]").filter(has_text=value)
+            if choice.count():
+                choice.first.click()
+                return
+        root.fill(value)
+        return
     root.fill(value)
+
+
+def _clear_field(page, field: ExtractedField) -> None:
+    if field.kind in {"file", "radio", "combobox", "typeahead"}:
+        return
+    locator = page.locator(f'[data-pocket-uid="{field.uid}"]')
+    if field.kind == "checkbox":
+        locator.set_checked(False)
+        return
+    locator.fill("")
 
 
 def _read_back(page, field: ExtractedField) -> str:
@@ -302,7 +381,13 @@ def _advance(page, snap: PageSnapshot) -> bool:
         return False
     forwards = []
     for button in snap.buttons:
-        kind = classify_button(button.text, button_type=button.button_type, onclick=button.onclick, in_dialog=button.in_dialog)
+        kind = classify_button(
+            button.text,
+            button_type=button.button_type,
+            onclick=button.onclick,
+            in_dialog=button.in_dialog,
+            heading=button.heading,
+        )
         if kind == "forward" and not button.in_dialog:
             forwards.append(button)
     if not forwards:
@@ -314,7 +399,7 @@ def _advance(page, snap: PageSnapshot) -> bool:
     return after == before and "/submitted" not in page.url
 
 
-def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *, asked: bool, from_memory: bool) -> FieldOutcome:
+def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *, asked: bool, from_memory: bool, via_model: bool = False) -> FieldOutcome:
     return FieldOutcome(
         label=field.label,
         section=field.section,
@@ -324,4 +409,5 @@ def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *,
         value=value,
         asked=asked,
         from_memory=from_memory,
+        via_model=via_model,
     )

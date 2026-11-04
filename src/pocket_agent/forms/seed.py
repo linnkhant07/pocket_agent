@@ -14,7 +14,30 @@ from pocket_agent.profile import example_profile_path
 SCRIPTED_ANSWERS: dict[str, tuple[str, bool]] = {
     "postal_code": ("78701", False),
     "address_line": ("100 Congress Avenue", False),
-    "how_did_you_hear": ("Online job board", False),
+    "how_did_you_hear": ("Referral", False),
+    "referrer_name": ("Sam Rivera", False),
+    "hispanic": ("No", False),
+    "export_control": ("No", False),
+    "gov_employment": ("No", False),
+    "gov_executive": ("No", False),
+    "gov_cabinet": ("No", False),
+    "gov_contractor": ("No", False),
+    "gov_relative": ("No", False),
+    "available_start": ("2026-06-15", False),
+    "spoken_language": ("English, native", False),
+    "interview_language": ("Python", False),
+    "onsite": ("3 days", False),
+    "office_choice": ("Austin", False),
+    "degree_by_start": ("Yes", False),
+    "grad_window": ("Yes", False),
+    "cover_letter": ("A short note about reliable software.", False),
+    "essay": ("I like shipping small tools that people can trust.", False),
+    "pronouns": ("they/them", False),
+    "preferred_name": ("", False),
+    "sms_consent": ("No", False),
+    "certify": ("Yes", False),
+    "arbitration": ("Yes", False),
+    "signature_date": ("2026-11-04", False),
     "gender": ("Decline to self-identify", True),
     "race": ("Decline to self-identify", True),
     "veteran_status": ("I am not a protected veteran", True),
@@ -77,6 +100,14 @@ def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "
     citizenship = profile.get("citizenship") or {}
     places = citizenship.get("authorized_to_work") or []
     _put(memory, "work_authorization", "Yes" if "US" in places else "No")
+    _put(memory, "located_in_us", "Yes" if str(citizenship.get("country") or "").upper() == "US" else "No")
+    _put(memory, "auth_status", "Citizen" if str(citizenship.get("country") or "").upper() == "US" else "")
+    degree = str(education.get("degree") or "")
+    _put(memory, "has_bachelors", "Yes" if degree.upper() in {"BS", "BA", "BSC", "BACHELOR", "BACHELOR'S"} or "bachelor" in degree.casefold() else "No")
+    jobs = list(profile.get("experience") or [])
+    if jobs:
+        latest = max(jobs, key=lambda job: str(job.get("end") or ""))
+        _put(memory, "most_recent_employer", str(latest.get("org") or ""))
     _put(memory, "requires_sponsorship", "Yes" if citizenship.get("requires_sponsorship") else "No")
     clearance = str(citizenship.get("clearance") or "none")
     _put(memory, "clearance", "No" if clearance.casefold() in {"none", "no", ""} else clearance)

@@ -101,9 +101,9 @@ def date_variants(value: str) -> list[str]:
 
 def _bucket(value: str) -> str:
     text = value.strip().casefold().rstrip(".")
-    if text in _YES:
+    if text in _YES or text.startswith("yes"):
         return "yes"
-    if text in _NO:
+    if text in _NO or text.startswith("no"):
         return "no"
     if text in _STATES:
         return _STATES[text].casefold()
@@ -117,9 +117,23 @@ def _bucket(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def _in_range(value: str, option: str) -> bool:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s*", option)
+    if not match:
+        return False
+    try:
+        number = float(value)
+    except ValueError:
+        return False
+    return float(match.group(1)) <= number <= float(match.group(2))
+
+
 def resolve_option(value: str, options: list[str]) -> str | None:
     if not options:
         return None
+    for option in options:
+        if _in_range(value, option):
+            return option
     target = _bucket(value)
     for option in options:
         if option.strip().casefold() in _EMPTY:

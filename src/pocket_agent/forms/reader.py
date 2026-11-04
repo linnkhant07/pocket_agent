@@ -90,6 +90,7 @@ _EXTRACT = r"""
   for (const el of controls) {
     if (consumed.has(el) || !visible(el)) continue;
     const type = (el.getAttribute("type") || el.type || "text").toLowerCase();
+    if (type === "password") continue;
     if (["hidden", "submit", "button", "reset", "radio", "checkbox"].includes(type) && el.getAttribute("role") !== "combobox") {
       if (type !== "checkbox") continue;
     }
@@ -115,6 +116,9 @@ _EXTRACT = r"""
     } else if (type === "file") {
       kind = "file";
       value = el.files && el.files.length ? "uploaded" : "";
+    } else if ((el.getAttribute("aria-autocomplete") || "") === "list") {
+      kind = "typeahead";
+      value = el.value || "";
     } else if (el.tagName === "TEXTAREA") {
       kind = "textarea";
       value = el.value || "";
@@ -134,6 +138,7 @@ _EXTRACT = r"""
       heading: heading(el),
       value,
       input_type: type,
+      list_id: el.getAttribute("aria-controls") || "",
     });
   }
   const buttons = [];
@@ -141,7 +146,7 @@ _EXTRACT = r"""
     if (!visible(button) || button.getAttribute("role") === "combobox") continue;
     buttons.push({
       uid: stamp(button),
-      text: clean(textOf(button) || button.getAttribute("aria-label") || ""),
+      text: clean(textOf(button) || button.getAttribute("aria-label") || button.getAttribute("title") || ""),
       type: button.type || "submit",
       onclick: button.getAttribute("onclick") || "",
       heading: heading(button),
@@ -152,7 +157,11 @@ _EXTRACT = r"""
   const progressNode = document.getElementById("progress");
   const progress = progressNode ? textOf(progressNode) : "";
   const alerts = [...document.querySelectorAll("[role=alert]")].filter(visible).map(textOf);
-  return { fields, buttons, progress, alerts };
+  const blob = (document.body.innerText || "").toLowerCase();
+  let gate = "";
+  if (/captcha|i'm not a robot|i am not a robot|verify you are human/.test(blob)) gate = "captcha";
+  else if (document.querySelector('input[type="password"]') || /create an account|create your account|sign in to apply|account already exists|already have an account/.test(blob)) gate = "login";
+  return { fields, buttons, progress, alerts, gate };
 }
 """
 
@@ -168,6 +177,7 @@ class ExtractedField:
     heading: str
     value: str
     input_type: str
+    list_id: str = ""
     section: str = ""
     group: int = 0
 
@@ -188,6 +198,7 @@ class PageSnapshot:
     buttons: list[ExtractedButton] = field(default_factory=list)
     progress: str = ""
     alerts: list[str] = field(default_factory=list)
+    gate: str = ""
 
 
 def extract_page(page) -> PageSnapshot:
@@ -203,6 +214,7 @@ def extract_page(page) -> PageSnapshot:
             heading=item["heading"],
             value=item["value"] or "",
             input_type=item["input_type"],
+            list_id=item.get("list_id") or "",
         )
         for item in raw["fields"]
         if item["label"]
@@ -219,7 +231,13 @@ def extract_page(page) -> PageSnapshot:
         )
         for item in raw["buttons"]
     ]
-    return PageSnapshot(fields=fields, buttons=buttons, progress=raw["progress"], alerts=list(raw["alerts"]))
+    return PageSnapshot(
+        fields=fields,
+        buttons=buttons,
+        progress=raw["progress"],
+        alerts=list(raw["alerts"]),
+        gate=raw.get("gate") or "",
+    )
 
 
 def _assign_groups(fields: list[ExtractedField]) -> None:

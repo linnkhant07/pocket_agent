@@ -153,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     fill.set_defaults(func=cmd_fill)
 
     eval_forms = sub.add_parser("eval-forms", help="Score the local fictional application suite")
+    eval_forms.add_argument("--suite", choices=["easy", "hard", "both"], default="easy")
     eval_forms.add_argument("--runs", type=int, default=1)
     eval_forms.add_argument("--model", default="none", choices=["none", "0.6b", "1.7b", "4b"])
     eval_forms.add_argument("--no-perturb", action="store_true")
@@ -506,7 +507,7 @@ def cmd_fill(args: argparse.Namespace) -> int:
 def cmd_eval_forms(args: argparse.Namespace) -> int:
     from pocket_agent.forms.evaluate import render_markdown, run_form_eval, write_reports
 
-    report = run_form_eval(runs=args.runs, perturbations=not args.no_perturb, model=args.model)
+    report = run_form_eval(runs=args.runs, perturbations=not args.no_perturb, model=args.model, suite=args.suite)
     print(render_markdown(report))
     if args.out:
         markdown = args.out.with_suffix(".md")

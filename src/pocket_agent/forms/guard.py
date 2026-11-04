@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 
 _SUBMIT = re.compile(
-    r"\b(submit|apply now|apply|send application|confirm application|finish and submit|agree and submit)\b",
+    r"\b(submit|apply now|apply|send application|confirm application|finish and submit|agree and submit|finish|review and submit)\b",
     re.I,
 )
+_ACCOUNT = re.compile(r"\b(create account|create an account|sign in|log in|sign up|signup)\b", re.I)
 _FORWARD = re.compile(r"\b(next|continue|save and continue)\b", re.I)
 _DISMISS = re.compile(r"\b(no thanks|close|dismiss|not now|maybe later|cancel)\b", re.I)
 _ADD = re.compile(r"\badd another\b|\badd (?:work|experience|employment|education|job|another)\b", re.I)
@@ -32,9 +33,20 @@ def looks_like_submit(text: str, *, button_type: str = "", onclick: str = "") ->
     return False
 
 
-def classify_button(text: str, *, button_type: str = "", onclick: str = "", in_dialog: bool = False) -> str:
-    """Return submit, forward, dismiss, add, or other."""
+def classify_button(
+    text: str,
+    *,
+    button_type: str = "",
+    onclick: str = "",
+    in_dialog: bool = False,
+    heading: str = "",
+) -> str:
+    """Return submit, account, forward, dismiss, add, or other."""
     if looks_like_submit(text, button_type=button_type, onclick=onclick):
+        return "submit"
+    if _ACCOUNT.search(text or ""):
+        return "account"
+    if _FORWARD.search(text or "") and re.search(r"\breview\b", heading or "", re.I):
         return "submit"
     if _DISMISS.search(text or ""):
         return "dismiss"

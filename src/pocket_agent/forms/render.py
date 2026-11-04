@@ -23,7 +23,7 @@ def render_form(spec: FormSpec, *, perturb: str | None = None) -> str:
         parts.append(_render_step(spec, step, step_index, rng, radio_names, perturb))
     steps_html = "\n".join(parts)
     progress = ""
-    if len(spec.steps) > 1 and spec.trap != "submit_next":
+    if len(spec.steps) > 1 and spec.trap not in {"submit_next", "review"}:
         progress = '<p id="progress">Step 1 of %d</p>' % len(spec.steps)
     modal = _modal() if perturb == "modal" else ""
     extra = ""
@@ -93,6 +93,11 @@ def _nav_button(spec: FormSpec, index: int) -> str:
         return '<p><button type="submit">Next</button></p>'
     if spec.trap == "autosubmit" and last:
         return '<p><button type="button" id="auto-last">Next</button></p>'
+    if spec.trap == "review" and last:
+        return (
+            '<p><button type="button" id="review-continue">Continue</button>'
+            '<button type="button" aria-label="Submit application">Go</button></p>'
+        )
     if last or len(spec.steps) == 1:
         return '<p><button type="submit">Submit application</button></p>'
     return '<p><button type="button" class="next">Next</button></p>'
@@ -102,6 +107,9 @@ def _render_fields(style: str, step: StepSpec, rng: random.Random, radio_names: 
     chunks = [_control(style, field, rng, radio_names).html for field in step.fields]
     rng.shuffle(chunks)
     inner = "\n".join(chunks)
+    if style == "taleo":
+        rows = "".join(f"<tr><td>{chunk}</td></tr>" for chunk in chunks)
+        inner = f'<table class="{_cls(rng)}">{rows}</table>'
     if step.repeater != "work":
         return inner
     template_id = _eid(rng)
@@ -133,25 +141,57 @@ def _control(style: str, field: FieldSpec, rng: random.Random, radio_names: dict
 
 
 def _control_html(style: str, field: FieldSpec, label: str, placeholder: str, required: str, aria: str, rng: random.Random, radio_names: dict[str, str]) -> str:
+    if field.widget == "typeahead":
+        return _typeahead(field, label, rng)
     if field.kind == "radio":
         return _radio(field, label, rng, radio_names)
     if field.kind == "checkbox":
         return f'<label><input type="checkbox"{required}{aria}> {label}</label>'
+    control_name = radio_names.get(field.key) or _eid(rng)
+    radio_names[field.key] = control_name
     if field.kind == "combobox":
-        return _combobox(field, label, rng)
+        return _combobox(field, label, rng, control_name)
     if field.kind == "select":
-        return _labeled(style, label, _select(field), rng, placeholder)
+        return _labeled(style, label, _annotate(_select(field, control_name), field), rng, placeholder)
     if field.kind == "file":
         control = f'<input type="file"{required}{aria}>'
         return _labeled(style, label, control, rng, "")
     if field.kind == "textarea":
         control = f'<textarea{required}{aria} placeholder="{placeholder}"></textarea>'
-        return _labeled(style, label, control, rng, placeholder)
-    control = f'<input type="text"{required}{aria} placeholder="{placeholder}">'
-    return _labeled(style, label, control, rng, placeholder)
+        return _labeled(style, label, _annotate(control, field), rng, placeholder)
+    input_type = "password" if field.mask else "text"
+    control = f'<input type="{input_type}"{required}{aria} placeholder="{placeholder}">'
+    return _labeled(style, label, _annotate(control, field), rng, placeholder)
 
 
-def _labeled(style: str, label: str, control: str, rng: random.Random, placeholder: str) -> str:
+def _annotate(control: str, field: FieldSpec) -> str:
+    extra = ""
+    if field.prefill:
+        extra += f' data-prefill="{html.escape(field.prefill)}"'
+    if field.mask:
+        extra += ' data-mask="1"'
+    if not extra:
+        return control
+    return control.replace(">", extra + ">", 1)
+
+
+def _typeahead(field: FieldSpec, label: str, rng: random.Random) -> str:
+    field_id = _eid(rng)
+    list_id = _eid(rng)
+    choices = ",".join(html.escape(option) for option in field.options)
+    required = " required" if field.required else ""
+    control = (
+        f'<input id="{field_id}" type="text" aria-autocomplete="list" aria-controls="{list_id}"{required}>'
+    )
+    control = _annotate(control, field)
+    items = "".join(f'<li role="option">{html.escape(option)}</li>' for option in field.options)
+    return (
+        f'<label for="{field_id}">{label}</label>{control}'
+        f'<ul id="{list_id}" role="listbox" hidden data-choices="{choices}">{items}</ul>'
+    )
+
+
+def _labeled(style: str, label: str, control: str, rng: random.Random, placeholder: str, field: FieldSpec | None = None) -> str:
     if style == "lever":
         # Accessible name is aria-label. Placeholder is a separate hint when it carries a format.
         hinted = control.replace(">", f' aria-label="{label}">', 1)
@@ -163,16 +203,17 @@ def _labeled(style: str, label: str, control: str, rng: random.Random, placehold
     return f'<label for="{element_id}">{label}</label>{control}'
 
 
-def _select(field: FieldSpec) -> str:
+def _select(field: FieldSpec, control_name: str = "") -> str:
     required = " required" if field.required else ""
+    named = f' data-reveal-name="{control_name}"' if control_name else ""
     options = ['<option value="">Select one</option>']
     for option in field.options:
         text = html.escape(option)
         options.append(f'<option value="{text}">{text}</option>')
-    return f"<select{required}>" + "".join(options) + "</select>"
+    return f"<select{required}{named}>" + "".join(options) + "</select>"
 
 
-def _combobox(field: FieldSpec, label: str, rng: random.Random) -> str:
+def _combobox(field: FieldSpec, label: str, rng: random.Random, control_name: str = "") -> str:
     label_id = _eid(rng)
     list_id = _eid(rng)
     items = []
@@ -181,9 +222,10 @@ def _combobox(field: FieldSpec, label: str, rng: random.Random) -> str:
         items.append(f'<li role="option">{text}</li>')
     options = "".join(items)
     required = ' aria-required="true"' if field.required else ""
+    named = f' data-reveal-name="{control_name}"' if control_name else ""
     return (
         f'<span id="{label_id}">{label}</span>'
-        f'<button type="button" role="combobox" aria-labelledby="{label_id}" aria-controls="{list_id}" aria-expanded="false"{required}>Select one</button>'
+        f'<button type="button" role="combobox" aria-labelledby="{label_id}" aria-controls="{list_id}" aria-expanded="false"{required}{named}>Select one</button>'
         f'<ul id="{list_id}" role="listbox" hidden>{options}</ul>'
     )
 
@@ -236,6 +278,8 @@ def _script(spec: FormSpec, perturb: str | None) -> str:
         auto = """
         const autoLast = document.getElementById("auto-last");
         if (autoLast) autoLast.addEventListener("click", () => document.getElementById("application").requestSubmit());
+        const reviewContinue = document.getElementById("review-continue");
+        if (reviewContinue) reviewContinue.addEventListener("click", () => document.getElementById("application").requestSubmit());
         """
     script = r"""
 function pocketUniquify(root) {
@@ -289,8 +333,10 @@ document.addEventListener("click", (event) => {
     const value = (option.textContent || "").trim();
     if (combo) {
       combo.dataset.value = value;
-      combo.textContent = value;
+      if ("value" in combo && combo.tagName === "INPUT") combo.value = value;
+      else combo.textContent = value;
       combo.setAttribute("aria-expanded", "false");
+      combo.dispatchEvent(new Event("change", { bubbles: true }));
     }
     if (list) list.hidden = true;
     return;
@@ -316,19 +362,60 @@ document.addEventListener("click", (event) => {
     if (dialog) dialog.remove();
   }
 });
+function pocketChosen(name) {
+  const radio = document.querySelector('input[type="radio"][name="' + name + '"]:checked');
+  if (radio) return radio.value;
+  const named = document.querySelector('[data-reveal-name="' + name + '"]');
+  if (!named) return "";
+  if (named.tagName === "SELECT") return named.value;
+  return named.dataset.value || named.value || "";
+}
 document.addEventListener("change", (event) => {
   const input = event.target;
-  if (!input || input.type !== "radio") return;
+  if (!input) return;
   document.querySelectorAll("[data-reveal]").forEach((box) => {
     const spec = box.getAttribute("data-reveal") || "";
     const eq = spec.indexOf("=");
     const name = spec.slice(0, eq);
     const value = spec.slice(eq + 1);
-    const chosen = document.querySelector('input[name="' + name + '"]:checked');
-    box.hidden = !(chosen && chosen.value === value);
+    box.hidden = pocketChosen(name) !== value;
   });
 });
 pocketAddRepeaters();
+document.querySelectorAll("[role=listbox]").forEach((list) => {
+  if (list.parentElement !== document.body) document.body.appendChild(list);
+});
+document.addEventListener("change", (event) => {
+  const input = event.target;
+  if (!input) return;
+  if (input.type === "file") {
+    document.querySelectorAll("[data-prefill]").forEach((el) => {
+      el.value = el.getAttribute("data-prefill") || "";
+    });
+  }
+  if (input.getAttribute && input.getAttribute("data-mask") === "1") {
+    input.value = "••••";
+  }
+});
+document.addEventListener("input", (event) => {
+  const input = event.target;
+  if (!input || input.getAttribute("aria-autocomplete") !== "list") return;
+  const list = document.getElementById(input.getAttribute("aria-controls"));
+  if (!list) return;
+  const query = (input.value || "").toLowerCase();
+  const items = [...list.querySelectorAll("[role=option]")];
+  if (query.length < 2) {
+    list.hidden = true;
+    return;
+  }
+  let shown = 0;
+  items.forEach((item) => {
+    const hit = (item.textContent || "").toLowerCase().includes(query);
+    item.hidden = !hit;
+    if (hit) shown += 1;
+  });
+  list.hidden = shown === 0;
+});
 """
     return script + "\n" + slow_timer + "\n" + validation + "\n" + auto
 

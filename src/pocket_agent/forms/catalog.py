@@ -25,6 +25,9 @@ class FieldSpec:
     expect: str = "fill"  # fill, ask, or skip
     placeholder: str = ""
     reveal_after: tuple[str, str] | None = None
+    widget: str = ""
+    prefill: str = ""
+    mask: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,8 @@ class FormSpec:
     steps: tuple[StepSpec, ...]
     trap: str | None = None
     seed: int = 1
+    gate: str | None = None
+    chain: int = 0
 
 
 def _text(key: str, label: str, **kwargs: object) -> FieldSpec:

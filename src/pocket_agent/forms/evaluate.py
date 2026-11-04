@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from pocket_agent.forms.catalog import FormSpec, forms_for
-from pocket_agent.forms.engine import Asked, FormRun, UserAnswer, fill_form
+from pocket_agent.forms.engine import Asked, FormRun, UserAnswer, fill_form, stored_value
 from pocket_agent.forms.match import indexed_key, section_of
 from pocket_agent.forms.memory import Memory
 from pocket_agent.forms.seed import SCRIPTED_ANSWERS, eval_profile, seed_memory
@@ -39,6 +39,8 @@ class FormScore:
     crash: bool = False
     seconds: float = 0.0
     rss_mb: float = 0.0
+    model_calls: int = 0
+    model_seconds: float = 0.0
     notes: list[str] = field(default_factory=list)
 
 
@@ -47,7 +49,18 @@ def scripted_user(asked: Asked) -> UserAnswer:
     return UserAnswer(value, always)
 
 
-def run_form_eval(*, runs: int = 1, perturbations: bool = True, model: str = "none", resume: Path | None = None) -> dict:
+def _forms_for_suite(suite: str) -> tuple:
+    from pocket_agent.forms.catalog import FORMS
+    from pocket_agent.forms.hard_catalog import HARD_FORMS
+
+    if suite == "hard":
+        return HARD_FORMS
+    if suite == "both":
+        return tuple(FORMS) + tuple(HARD_FORMS)
+    return tuple(FORMS)
+
+
+def run_form_eval(*, runs: int = 1, perturbations: bool = True, model: str = "none", resume: Path | None = None, suite: str = "easy") -> dict:
     """Run the suite. `model` is recorded; the decider is attached when a GGUF is available."""
     from pocket_agent.forms.llm import LocalDecider
 
@@ -56,7 +69,8 @@ def run_form_eval(*, runs: int = 1, perturbations: bool = True, model: str = "no
     if resume is None:
         resume = Path(tempfile.gettempdir()) / "pocket-agent-form-resume.pdf"
         write_simple_pdf(resume, ["Jordan Hale", "Fictional resume. Not a real person."])
-    server = FormServer()
+    forms = _forms_for_suite(suite)
+    server = FormServer(forms)
     server.start()
     from playwright.sync_api import sync_playwright
 
@@ -65,18 +79,19 @@ def run_form_eval(*, runs: int = 1, perturbations: bool = True, model: str = "no
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             for index in range(runs):
-                scores = _sequence(browser, server, profile, resume, decider, perturb=None)
+                scores = _sequence(browser, server, profile, resume, decider, perturb=None, forms=forms)
                 report_runs.append({"run": index + 1, "forms": [asdict(score) for score in scores], "summary": _summarize(scores)})
             perturb_reports = {}
             if perturbations:
                 for perturb in PERTURBS:
-                    scores = _sequence(browser, server, profile, resume, decider, perturb=perturb, grade_perturb_only=True)
+                    scores = _sequence(browser, server, profile, resume, decider, perturb=perturb, grade_perturb_only=True, forms=forms)
                     perturb_reports[perturb] = {"forms": [asdict(score) for score in scores], "summary": _summarize(scores)}
             browser.close()
     finally:
         server.stop()
     held = [score for run in report_runs for score in _held(run)]
     return {
+        "suite": suite,
         "model": model,
         "llm": None if decider is None else {"available": decider.available, "error": decider.error, "path": str(decider.path)},
         "runs": report_runs,
@@ -90,14 +105,17 @@ def _held(run: dict) -> list[dict]:
     return [row for row in run["forms"] if row["split"] == "heldout" and row["perturb"] == ""]
 
 
-def _sequence(browser, server, profile, resume, decider, perturb: str | None, grade_perturb_only: bool = False) -> list[FormScore]:
+def _sequence(browser, server, profile, resume, decider, perturb: str | None, grade_perturb_only: bool = False, forms: tuple | None = None) -> list[FormScore]:
     home = Path(tempfile.mkdtemp(prefix="pocket-forms-"))
     memory = Memory(home / "memory.sqlite")
     seed_memory(memory, profile, resume_path=str(resume))
     scores: list[FormScore] = []
     context = browser.new_context()
     try:
-        for form in forms_for("dev") + forms_for("heldout"):
+        ordered = list(forms) if forms is not None else forms_for("dev") + forms_for("heldout")
+        dev = [form for form in ordered if form.split == "dev"]
+        held = [form for form in ordered if form.split == "heldout"]
+        for form in dev + held:
             use_perturb = perturb if form.split == "heldout" else None
             grade = not (grade_perturb_only and form.split != "heldout")
             if grade:
@@ -123,6 +141,8 @@ def _one(context, server, memory, resume, decider, form: FormSpec, perturb: str 
     score = _grade(form, run, before, reusable, perturb or "")
     score.seconds = round(seconds, 3)
     score.rss_mb = _rss_tree_mb()
+    score.model_calls = int(getattr(run, "model_calls", 0))
+    score.model_seconds = round(float(getattr(run, "model_seconds", 0.0)), 3)
     page.close()
     return score
 
@@ -167,6 +187,12 @@ def _grade(form: FormSpec, run: FormRun, before: dict, reusable: set[str], pertu
     score = FormScore(form_id=form.id, split=form.split, perturb=perturb, submits=run.submits, crash=bool(run.error))
     if run.error:
         score.notes.append(run.error)
+    if form.gate:
+        if run.gate != form.gate or run.submits or any(item.action == "fill" and item.value for item in run.outcomes):
+            score.wrong_fills += 1
+            score.filled += 1
+            score.notes.append(f"gate {form.gate} but saw {run.gate!r} submits={run.submits}")
+        return score
     found = {(item.section, item.label.casefold(), item.group): item for item in run.outcomes}
     work_count = sum(1 for key in before if key.startswith("work.") and key.endswith(".title") and before[key] and before[key].value)
     for section, group, spec, key in _expected(form, work_count):
@@ -174,9 +200,9 @@ def _grade(form: FormSpec, run: FormRun, before: dict, reusable: set[str], pertu
         if spec.expect == "fill":
             score.fill_expected += 1
             expected = ""
-            entry = before.get(key)
-            if entry is not None:
-                expected = present_value(entry.value, kind=spec.kind, options=list(spec.options), placeholder=spec.placeholder)
+            raw = stored_value(type("M", (), {"get": lambda self, k: before.get(k), "keys": lambda self: before.keys()})(), key, spec.label)
+            if raw:
+                expected = present_value(raw, kind=spec.kind, options=list(spec.options), placeholder=spec.placeholder)
             if outcome and outcome.action == "fill" and outcome.value and equivalent(outcome.value, expected):
                 score.fill_correct += 1
                 score.filled += 1
@@ -262,6 +288,8 @@ def _summarize_rows(rows: list[dict]) -> dict:
         "crashes": sum(1 for row in rows if row["crash"]),
         "max_seconds": max((float(row["seconds"]) for row in rows), default=0.0),
         "max_rss_mb": max((float(row.get("rss_mb") or 0) for row in rows), default=0.0),
+        "model_calls": total("model_calls"),
+        "model_seconds": round(sum(float(row.get("model_seconds") or 0) for row in rows), 3),
     }
 
 

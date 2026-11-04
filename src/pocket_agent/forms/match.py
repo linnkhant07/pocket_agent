@@ -23,7 +23,7 @@ _STOP = {
 }
 _MODIFIERS = {
     "number", "address", "url", "line", "code", "current", "mailing", "home", "upload", "attach", "copy",
-    "most", "recent", "able", "hold", "have", "has", "highest", "awarded", "attended",
+    "most", "recent", "able", "hold", "have", "has", "highest", "awarded", "attended", "select", "choose",
     "overall", "tools", "opening", "conferred", "protected", "status",
     "permanent", "street", "postal", "residence", "residential", "mobile",
     "primary", "preferred", "full", "job", "position", "employer", "employment",
@@ -134,6 +134,17 @@ PHRASES: dict[str, str] = {
     "cv": "resume",
     "resume cv": "resume",
     "upload resume": "resume",
+    "highest level of education": "degree",
+    "level of education": "degree",
+    "most recent employer": "most_recent_employer",
+    "most recent company": "most_recent_employer",
+    "most recent organization": "most_recent_employer",
+    "personal website": "website",
+    "employment authorization": "auth_status",
+    "authorization status": "auth_status",
+    "authorization category": "auth_status",
+    "referrer name": "referrer_name",
+    "referrer": "referrer_name",
 }
 
 _RAW_PHRASES = PHRASES
@@ -149,6 +160,32 @@ CONTAINS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("remotely",), "remote_ok"),
     (("remote",), "remote_ok"),
     (("graduation",), "graduation"),
+    (("portfolio",), "website"),
+    (("website",), "website"),
+    (("referrer",), "referrer_name"),
+    (("previously", "employed"), "previously_employed_here"),
+    (("previously", "worked"), "previously_employed_here"),
+    (("ever", "worked"), "previously_employed_here"),
+    (("current", "employer"), "most_recent_employer"),
+    (("worked", "company"), "previously_employed_here"),
+    (("worked", "employer"), "previously_employed_here"),
+    (("employed", "employer"), "previously_employed_here"),
+    (("applied", "employer"), "previously_employed_here"),
+    (("applied", "company"), "previously_employed_here"),
+    (("located", "us"), "located_in_us"),
+    (("located", "united"), "located_in_us"),
+    (("learn", "about"), "how_did_you_hear"),
+    (("learn", "opening"), "how_did_you_hear"),
+    (("learn", "role"), "how_did_you_hear"),
+    (("bachelor",), "has_bachelors"),
+    (("school",), "school"),
+    (("university",), "school"),
+    (("title",), "work.title"),
+    (("first", "name"), "first_name"),
+    (("given", "name"), "first_name"),
+    (("last", "name"), "last_name"),
+    (("family", "name"), "last_name"),
+    (("most", "recent"), "most_recent_employer"),
     (("github",), "github"),
     (("linkedin",), "linkedin"),
     (("gpa",), "gpa"),
@@ -202,6 +239,12 @@ def section_of(heading: str) -> str:
         return "eeo"
     if any(word in text for word in ("experience", "employment", "work history")):
         return "work"
+    if "question" in text:
+        return ""
+    if "review" in text:
+        return "review"
+    if any(word in text for word in ("voluntary", "self-identify", "self identify", "ofccp", "disability")):
+        return "eeo"
     if "education" in text or "academic" in text:
         return "education"
     if any(word in text for word in ("contact", "personal", "my information", "profile")):
