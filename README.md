@@ -8,9 +8,11 @@ It does not submit applications. There is no apply tool, and `pocket-agent fill`
 
 ## Form filler
 
-`pocket-agent fill <url>` opens the page in Chromium, reads every field it can see, and fills the ones that match the local profile. Anything it does not know, and anything sensitive, it asks in the terminal and stores the answer for the next form. Sensitive fields are gender, race, veteran status, disability, salary, criminal history, signatures and other legal attestations, SSN, date of birth, and government ID. Those are asked every time unless you answer yes to "Always use this answer on future forms?"
+`pocket-agent fill <url>` opens the page in Chromium, reads every field it can see, and fills the ones that match the local profile. Anything it does not know, and anything on the always-ask list, it asks in the terminal and stores the answer. Saved answers are reused only when the question is the same fact. "Authorized to work" is not "requires sponsorship."
 
-The page reader is ordinary code. It uses the label, `aria-label`, `aria-labelledby`, and nearby text. It handles text, text areas, native selects, radio groups, checkboxes, dates, file upload, and ARIA comboboxes. Multi-step pages advance with Next or Continue. A button is not clicked when its type is submit, its label is Submit or Apply, its click handler submits, or the page says it is the last step (`Step 3 of 3`). The filled page stays open for you to review. The command then prints what it filled, what it asked, and what it skipped.
+Always asked, unless you already saved an explicit "always use this" answer: essays and cover letters, salary, start date, spoken languages and interview language, export-control and government or conflict-of-interest questions, "will you have finished your degree" and graduation-window checks, hybrid or on-site schedule and office choice, EEO (gender, Hispanic/Latino, race, veteran, disability), e-signature, certification, and arbitration checkboxes. Passwords are not typed. A sign-in page or a CAPTCHA stops the run.
+
+The page reader is ordinary code. It uses the label, `aria-label`, `aria-labelledby`, and nearby text. It handles text, text areas, native selects, radio groups, checkboxes, dates, file upload, ARIA comboboxes, and typeahead lists. Multi-step pages advance with Next or Continue. A button is not clicked when it submits, when it says Submit, Apply, or Finish, when it says Continue on a Review step, or when the page says it is the last step (`Step 3 of 3`). Resume parse mistakes are overwritten from the profile. The command prints what it filled, what it asked, and what it skipped.
 
 Memory is `~/.pocket-agent/forms.sqlite`. Matching tries canonical synonyms, then a fuzzy match, then a local GGUF model. The model is only allowed to return JSON, and a fill must be one of the memory values it was shown. If the model file is missing, known fields still fill and unknown fields are asked.
 
@@ -33,24 +35,35 @@ uv run pocket-agent fill 'https://example.test/apply'
 `--model` is `0.6b`, `1.7b`, `4b`, or `none`. `0.6b` is the default. The other files are `Qwen3-1.7B-Q8_0.gguf` from `Qwen/Qwen3-1.7B-GGUF` and `Qwen3-4B-Q4_K_M.gguf` from `Qwen/Qwen3-4B-GGUF`.
 
 ```bash
-uv run pocket-agent eval-forms --runs 3 --model none --out form-eval.json
+uv run pocket-agent eval-forms --suite hard --runs 3 --model 0.6b --out form-eval.json
 ```
 
-That serves 29 fictional applications on localhost and writes JSON and Markdown. Companies and the applicant are invented. It does not open a real job site.
+`--suite` is `easy` (29 short forms), `hard` (20 forms shaped like Workday, Taleo, Oracle, Greenhouse, and custom pages), or `both`. Companies and the applicant are invented. It does not open a real job site.
 
 ### Form-suite results
 
-Same Linux machine as the earlier runs: 4 cores, 15.6 GB RAM, no GPU. Chromium headless. The applicant is the fictional Jordan Hale profile plus a second fictional job. Three clean runs, then the 15 held-out forms again with a slow reveal, a modal, a conditional field, and a date field that rejects numeric formats. `none` means the GGUF was not loaded. The 0.6B row loaded `Qwen3-0.6B-Q8_0.gguf` (639,446,688 bytes). Every field in this suite matched before the model was asked, so the 0.6B counts match the deterministic run. RSS is the Python process plus Chromium, and on the 0.6B run it includes the weights.
+Linux, 4 cores, 15.6 GB RAM, no GPU, Chromium headless. Applicant is the fictional Jordan Hale profile plus a second fictional job. RSS is Python plus Chromium, and includes the GGUF when one is loaded.
 
-| Run | Dev fill | Held-out fill | Wrong fills | Asks | Repeat-asks | Submits | Crashes | Max seconds | RSS |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| none, 3 runs | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 1.41 dev, 0.99 held | 646–659 MB |
-| none, slow / modal / conditional / validation | — | 111/111 on each | 0 | 6/6 | 0 | 0 | 0 | 1.66 / 1.06 / 0.98 / 1.27 | up to 672 MB |
-| 0.6B Q8, 1 run | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 1.43 dev, 0.95 held | 1561 MB |
+The easy suite is 14 dev forms and 15 held-out forms with short labels. The hard suite is 10 dev and 10 held-out. Held-out questions use different sentences from dev. They are not copied into the synonym table. Work authorization and sponsorship stay separate keys. A dev form asks how you heard and the referrer's name; a later held-out form with different wording fills both from memory. Login and "verify you are human" pages stop with nothing filled. A Review step whose button says Continue is not clicked.
 
-1.7B and 4B were not scored. This suite never reached the model, so a larger file would not change these counts. A separate prompt, the label "Preferred contact handle" with email, phone, and GitHub in memory, returned `ask` in 2.93 s after a 0.74 s load. It did not invent a value.
+Non-exact matches are sent to the model. If the model names a different key, or asks, the filler keeps the keyword it already found. A probe where 0.6B was the only judge asked, or picked LinkedIn, for the H-1B sponsorship question. That is why a keyword hit is not overwritten. Calls below are those consultations. Per-call time is model seconds divided by calls, on this CPU.
 
-The reliability bar for this suite is wrong-fill at or under 1% of filled fields, fill accuracy at or above 95%, every sensitive or unknown field asked or filled from an explicit saved answer, no submit clicks, repeat-asks at or under 2% after the value is already stored, no crashes across the three runs, and under 90 s per form. The `none` runs and the 0.6B run meet it. Real Workday, Greenhouse, and Lever pages were not opened. A Mac, including Metal, was not used.
+| Suite | Model | Dev fill | Held-out fill | Wrong | Asks | Repeat-asks | Submits | Crashes | Calls (held) | Seconds per call | Max seconds | RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Easy | none, 1 run | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 0 | — | 1.57 | 646 MB |
+| Easy | 0.6B Q8 | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 33 | 1.9 | 12.2 | 1670 MB |
+| Easy | 1.7B Q8 | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 33 | 4.9 | 28.6 | 2816 MB |
+| Easy | 4B Q4 | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 33 | 5.7 | 29.7 | 5192 MB |
+| Hard | none, 3 runs | 31/31 | 22/22 | 0 | 19/19 and 20/20 | 0 | 0 | 0 | 0 | — | 0.87 | 656 MB |
+| Hard | 0.6B Q8, 3 runs | 31/31 | 22/22 | 0 | 19/19 and 20/20 | 0 | 0 | 0 | 20 | 1.9 | 14.8 | 1679 MB |
+| Hard | 1.7B Q8 | 31/31 | 22/22 | 0 | 19/19 and 20/20 | 0 | 0 | 0 | 20 | 4.8 | 33.6 | 2812 MB |
+| Hard | 4B Q4 | 31/31 | 22/22 | 0 | 19/19 and 20/20 | 0 | 0 | 0 | 20 | 6.5 | 50.3 | 5156 MB |
+
+The easy suite's earlier perturbation pass (slow reveal, modal, conditional field, date format rejected) was 111/111 held-out with no model, max 1.66 s. It was not repeated for every model size.
+
+The hard held-out bar is wrong-fill at or under 1%, fill accuracy at or above 95%, every always-ask field asked or filled from an explicit saved answer, no submit clicks, repeat-asks at or under 2%, no crashes, and under 90 s per form. `none` meets it across 3 runs. 0.6B, 1.7B, and 4B each meet it on a run. 0.6B is the smallest GGUF that meets it. `none` also meets it, and it is what runs when the GGUF file is missing.
+
+Before a guard was added, 4B filled a blank "Referrer name" from the applicant's own name. That path now asks when the referrer value is not saved yet. Real employer sites were not opened. A Mac, including Metal, was not used. Degree-completion and graduation-window questions are asked, not inferred from the May 2026 graduation on the profile. Export-control and government questions are asked even though the profile says US citizen.
 
 The default job sources are the two SimplifyJobs lists:
 

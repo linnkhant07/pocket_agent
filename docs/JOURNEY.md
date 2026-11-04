@@ -209,3 +209,24 @@ Three clean runs with no GGUF loaded, then the held-out forms again under four p
 | Qwen3-0.6B Q8, one run | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 1.43 dev, 0.95 held | 1561 MB |
 
 Repeat-asks were 0. The 0.6B file is 639,446,688 bytes. It loaded in the process and was not called for any suite field, because the synonym table already matched. 1.7B and 4B were not scored for that reason. One extra prompt, "Preferred contact handle", with email, phone, and GitHub as the only allowed keys, returned `ask` in 2.93 s. This VM is Linux CPU. Chromium was headless. No real job site was opened, and the Mac Metal path was not run. The bar set for the suite (wrong-fill ≤1%, fill accuracy ≥95%, sensitive fields asked or explicitly saved, 0 submits, repeat-ask ≤2%, 0 crashes over 3 runs, under 90 s) is met by the rows above.
+
+## 2026-11-04 — Realistic hard forms
+
+The first form suite was too easy: every label was already a synonym, so the model was never called, and the same person wrote the matcher and the labels. A second suite of 20 forms uses wording and mechanics from real ATS pages (Workday, Taleo, Oracle Cloud HCM, Greenhouse, and custom), without personal data and without real employer sites. Held-out sentences are not the dev sentences and are not entries in the synonym table.
+
+Always asked, unless an explicit saved answer exists: salary, start date, essays and cover letters, spoken languages and interview language, export control, the government and conflict-of-interest chain, "will you have the degree by your start date," graduation-window checks, hybrid or on-site schedule and office choice, EEO, e-signature, certification, and arbitration. Work authorization is not treated as sponsorship. A login wall or a CAPTCHA stops the run. Continue on a Review step is classified as submit and is not clicked. Resume-parse mistakes (a mangled date, a truncated school, a misspelled employer) are overwritten from the profile. Typeahead school and company fields are filled by typing and choosing a suggestion.
+
+Non-exact matches are sent to the model. If it names another key, the keyword already in the label is kept. On a probe, 0.6B alone asked, or picked LinkedIn, for the H-1B sponsorship question. One 4B run, before that guard, wrote the applicant's name into an empty referrer field. After the guard, empty referrer asks, and a later form reuses the saved name.
+
+| Suite | Model | Dev | Held-out | Wrong | Calls on held-out | Seconds per call | Max form | RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Easy | none | 108/108 | 111/111 | 0 | 0 | — | 1.57 s | 646 MB |
+| Easy | 0.6B Q8 | 108/108 | 111/111 | 0 | 33 | 1.9 | 12.2 s | 1670 MB |
+| Easy | 1.7B Q8 | 108/108 | 111/111 | 0 | 33 | 4.9 | 28.6 s | 2816 MB |
+| Easy | 4B Q4 | 108/108 | 111/111 | 0 | 33 | 5.7 | 29.7 s | 5192 MB |
+| Hard | none, 3 runs | 31/31 | 22/22 | 0 | 0 | — | 0.87 s | 656 MB |
+| Hard | 0.6B Q8, 3 runs | 31/31 | 22/22 | 0 | 20 | 1.9 | 14.8 s | 1679 MB |
+| Hard | 1.7B Q8 | 31/31 | 22/22 | 0 | 20 | 4.8 | 33.6 s | 2812 MB |
+| Hard | 4B Q4 | 31/31 | 22/22 | 0 | 20 | 6.5 | 50.3 s | 5156 MB |
+
+Asks were complete on every row, submits were 0, repeat-asks were 0, and crashes were 0. The hard held-out bar is met by `none` and by all three GGUF sizes. 0.6B is the smallest GGUF that meets it. `none` also meets it. Real pages and a Mac were not tested.
