@@ -178,3 +178,18 @@ The wall clock did not match the per-step number. `train_runtime` was 9,016 seco
 Epoch 1.79 week-1 latency p50/p95 was 5.322 s / 19.246 s, 10.7 tokens/s, 3,722 completion tokens, process RSS 4,741.7 MB. Held-out was 7.645 s / 24.744 s, 8.1 tokens/s, 4,828 tokens, RSS 5,840.4 MB. Eleven of 15 traps passed.
 
 The hypothesis held on week 1 and not on the held-out slice. Week 1 went 9/50 to 16/50, ahead of the gold-only 11/50, with JSON validity 0.94 and restraint 10/18. The held-out slice went 36/60 to 37/60 and is still behind the gold-only 43/60. Restraint on that slice fell from 24/26 to 18/26. More steps on this mix are not a substitute for the shorter gold-only run on held-out companies.
+
+## 2026-11-04 — Teach suite v2 and a second Groq collection
+
+The mix runs did well on employers they had trained on and worse on new ones. Restraint on the held-out traps fell to 18/26 in the longer run. A second, wider teacher set was built to give more variety and more restraint cases.
+
+`src/pocket_agent/teacher_tasks_v2.py` has 318 tasks over 100 new fictional employers (200 jobs, `teach2:*` ids). They come from word lists that are separate from week 1, the held-out set, and teach v1. There are 31 locations, 24 role families times 8 seniority labels, and several phrasings per request type, picked with a fixed seed. 143 of 318 tasks (45%) are restraint tasks: 36 ask_user with the canonical field names, 20 submit refusals, 18 unsafe requests (fake references, invented credentials, recruiter home addresses), 10 out-of-scope requests (flights, payments, signing an offer), 14 clearance exclusions, and the ineligible fit checks. A test checks that no v2 employer word shows up in any eval or held-out prompt or expectation, and that emails, prompts, and job ids do not overlap with held-out, gold, or teach v1. Profiles are synthetic (seed 53, start index 40000, @example.com). Every gold script passes the checker.
+
+The collector got `--suite v2`, a compact teacher-only system prompt (the trace and the trainset keep the harness `SYSTEM_PROMPT`), shuffled task order, and a 700-token completion cap. Any HTTP 400 now counts as an invalid turn. Both free-tier models ran at the same time on 2026-11-04 and both stopped at Groq's 200,000 tokens/day cap after about 30 minutes. One short retry later added one more 120b trace.
+
+| Model | Attempted | Accepted | Prompt tokens (cached) | Completion tokens |
+| --- | --- | --- | --- | --- |
+| openai/gpt-oss-120b | 97 | 63 | 140,199 (44,800) | 17,058 |
+| openai/gpt-oss-20b | 177 | 45 | 74,880 (15,104) | 9,056 |
+
+Groq's cap counter read 199,119 used for 120b and 199,875 for 20b when the runs stopped. The 120b number includes usage left over from the day before. The 108 accepted traces cover 98 distinct tasks. 65 of them (60%) are restraint tasks, because those were accepted more often than search and track tasks. By skill: track 37, prefill 35, find 21, screen 15. Files: `data/teacher/teach_traces_v2.jsonl`, `teach_attempts_v2.jsonl`, `teach_traces_v2.runs.jsonl`. `mix.groq_rows()` now loads v1 and v2 by default (v2 rows are tagged `groq_v2`), so the training mix is gold + teach-gold + Groq v1 + Groq v2. No training was run.
