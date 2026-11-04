@@ -161,3 +161,20 @@ Same eval as run 3: transformers, greedy, 96 new tokens, week 1 and the same 60-
 | Mix LoRA | 9/50 | 36/60 | 0.84 and 0.833 | 0.86 and 0.948 | 7/18 and 24/26 |
 
 Mix week-1 latency p50/p95 was 5.584 s / 11.982 s, 10.4 tokens/s, 3,178 completion tokens, process RSS 4,742.0 MB. Mix held-out was 7.548 s / 19.540 s, 9.4 tokens/s, 4,436 tokens, RSS 4,742.3 MB. Thirteen of 15 traps passed. The mix beats the base and loses to the 40-step gold-only adapter. It saw each example less often (0.66 epoch versus 2.35), and the Groq slice has no accepted track traces. That is a description of the run, not a controlled ablation.
+
+## Longer mix run — did 0.66 epoch explain the gap?
+
+The hypothesis was that the mix lost to the gold-only adapter because 64 steps is only epoch 0.656 on 390 rows (97.5 steps per epoch), while the gold-only run reached epoch 2.35. The same 390-example mix was trained again. At step 6 the meter read about 27.7 s/step and still had about 1 hour 25 minutes left on a 190-step job, which is about 88 minutes total, past the 85 minute cutoff. The job was restarted at 175 steps, with adapter checkpoints at 58, 116, and 174. That target is epoch 1.79, not 2.0.
+
+The wall clock did not match the per-step number. `train_runtime` was 9,016 seconds and the meter finished at 2:30:16, an average of 51.5 s/step, while late steps were still about 26 s. Logged train loss was 0.1275. The lowest logged window was 0.003733 at epoch 1.687. There is no checkpoint on that step. The final adapter is `/opt/cursor/artifacts/pocket-qwen3-0.6b-lora-long`, 9,204,512 bytes. The step-58, 116, and 174 checkpoints were not scored. Eval was the final adapter only, same settings as before: transformers, greedy, 96 new tokens, week 1 and the same 60-task slice with 15 traps.
+
+| | Week 1 | Held-out 60 | Tool accuracy | JSON valid | Restraint |
+| --- | --- | --- | --- | --- | --- |
+| Base | 3/50 | 5/60 | 0.40 and 0.367 | 0.767 and 0.742 | 3/18 and 3/26 |
+| Gold-only LoRA, epoch 2.35 | 11/50 | 43/60 | 0.82 and 0.867 | 0.81 and 0.928 | 8/18 and 26/26 |
+| Mix, epoch 0.66 | 9/50 | 36/60 | 0.84 and 0.833 | 0.86 and 0.948 | 7/18 and 24/26 |
+| Mix, epoch 1.79 | 16/50 | 37/60 | 0.86 and 0.883 | 0.94 and 0.961 | 10/18 and 18/26 |
+
+Epoch 1.79 week-1 latency p50/p95 was 5.322 s / 19.246 s, 10.7 tokens/s, 3,722 completion tokens, process RSS 4,741.7 MB. Held-out was 7.645 s / 24.744 s, 8.1 tokens/s, 4,828 tokens, RSS 5,840.4 MB. Eleven of 15 traps passed.
+
+The hypothesis held on week 1 and not on the held-out slice. Week 1 went 9/50 to 16/50, ahead of the gold-only 11/50, with JSON validity 0.94 and restraint 10/18. The held-out slice went 36/60 to 37/60 and is still behind the gold-only 43/60. Restraint on that slice fell from 24/26 to 18/26. More steps on this mix are not a substitute for the shorter gold-only run on held-out companies.
