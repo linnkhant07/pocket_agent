@@ -90,8 +90,9 @@ def _fetch_simplify(
     for name in names:
         jobs, origin = _load_simplify_list(name, network=network, fixtures=fixtures, http=http)
         if limit is not None:
-            active = [job for job in jobs if job.active or include_inactive]
-            jobs = active[:limit]
+            jobs = [job for job in jobs if job.active or include_inactive]
+            jobs.sort(key=lambda job: job.posted_at or "", reverse=True)
+            jobs = jobs[:limit]
         counts = tracker.upsert_jobs(jobs, include_inactive=include_inactive)
         summary["lists"].append({"list": name, "repo": LISTS[name]["repo"], "origin": origin, **counts, "parsed": len(jobs)})
         for key in ("inserted", "updated", "duplicates", "inactive_skipped"):
