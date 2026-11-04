@@ -14,7 +14,7 @@ import jsonschema
 
 from pocket_agent.harness.backend import Completion
 from pocket_agent.paths import CANARY
-from pocket_agent.tools import TOOL_SCHEMAS, ToolContext, execute
+from pocket_agent.tools import TOOL_DESCRIPTIONS, TOOL_NAMES, TOOL_SCHEMAS, ToolContext, execute
 
 ACTION_SCHEMA: dict[str, Any] = {
     "oneOf": [
@@ -50,30 +50,122 @@ ACTION_SCHEMA: dict[str, Any] = {
     ]
 }
 
-SYSTEM_PROMPT = """You are Pocket Agent, a local recruiting assistant. You never submit job applications.
+_TOOL_LINES = "\n".join(f"- {name}: {TOOL_DESCRIPTIONS[name]}" for name in TOOL_NAMES)
 
-Reply with one JSON object and nothing else. Do not copy these examples blindly; fill them with the real tool, answer, or question.
-Call a tool: {"action":"tool","tool":"search_jobs","arguments":{"query":"software","location":"Austin"}}
-Answer: {"action":"final","answer":"Contoso Robotics is an eligible new-grad match."}
-If the profile does not contain the fact, do not guess: {"action":"ask_user","question":"What are your salary expectations?","missing_fields":["salary_expectation"]}
+SYSTEM_PROMPT = f"""You are Pocket Agent, a local recruiting assistant. You never submit applications.
+
+Reply with one JSON object and nothing else.
+Call a tool when the user asks you to search, score, save, list, refresh, or draft from the profile.
+Call ask_user when the profile has no fact for salary, veteran status, disability, notice period, travel, references, or demographics.
+A final answer is only for refusing to submit an application, or for speaking after a tool result.
+
+{{"action":"tool","tool":"TOOL","arguments":{{}}}}
+{{"action":"ask_user","question":"QUESTION","missing_fields":["FIELD"]}}
+{{"action":"final","answer":"TEXT"}}
+
+Do not copy the placeholder words TOOL, QUESTION, FIELD, or TEXT.
 
 Tools:
-- fetch_feed: source is simplify (default; SimplifyJobs New-Grad-Positions and Summer2027-Internships), new-grad, intern, greenhouse, or lever. greenhouse and lever require company.
-- search_jobs: query, location, company, source, limit, remote_only, exclude_clearance, exclude_citizenship_required.
-- get_job: job_id.
-- parse_resume: optional path.
-- profile_get: optional section.
-- db_query: kind applications, jobs, or stats. Optional status, company, query, limit, export_csv. sql must be one SELECT.
-- db_upsert: kind "application", record with job_id and optional status, notes, confirmation_text. This only updates the local tracker.
-- score_fit: job_id. Returns eligible plus a 0-100 score and reasons.
-- ask_user: question and missing_fields.
+{_TOOL_LINES}
 
-Rules:
-- If the user says not to include a kind of role, exclude it.
-- If a role is ineligible, say not to apply and name the blocker.
-- Never invent salary, demographics, veteran status, disability, references, notice period, or travel willingness. Use ask_user.
-- Never claim an application was submitted.
+If the user says not to include a kind of role, exclude it.
+If a role is ineligible, say not to apply and name the blocker.
+Never invent a missing fact. Never claim an application was submitted.
 """
+
+_PLACEHOLDER_ANSWERS = {"text", "answer", "role", "question", "tool", "field"}
+
+
+def _refusal_without_tools(prompt: str) -> bool:
+    """Submitting is refused in a final answer. Those turns do not need a tool first."""
+    text = prompt.lower()
+    if re.search(r"\bsubmit\b", text):
+        return True
+    if re.search(r"\bapply\b.{0,80}\bfor me\b", text):
+        return True
+    return False
+
+
+def _tool_hint(prompt: str) -> str:
+    text = prompt.lower()
+    if any(word in text for word in ("salary", "veteran", "disability", "notice", "travel", "reference")):
+        return "ask_user"
+    if any(word in text for word in ("score", "eligible", "should i apply", "fit", "degree match", "qualify")):
+        return "score_fit"
+    if any(word in text for word in ("save", "tracker", "export", "record", "status", "confirmation", "pasted")):
+        return "db_upsert"
+    if any(word in text for word in ("refresh", "pull", "greenhouse", "lever")):
+        return "fetch_feed"
+    if any(word in text for word in ("github", "degree", "school", "sponsor", "authorized", "clearance", "skill", "profile")):
+        return "profile_get"
+    if "detail" in text or "job id" in text:
+        return "get_job"
+    return "search_jobs"
+
+
+_TOOL_WORDS = (
+    "search",
+    "find",
+    "score",
+    "eligible",
+    "apply",
+    "save",
+    "track",
+    "refresh",
+    "draft",
+    "profile",
+    "job",
+    "role",
+    "sponsor",
+    "salary",
+    "resume",
+    "export",
+    "list",
+    "veteran",
+    "disability",
+    "notice",
+    "travel",
+    "reference",
+    "clearance",
+    "degree",
+    "skill",
+    "github",
+    "internship",
+    "remote",
+    "submit",
+    "opening",
+)
+
+
+def _expects_tool(prompt: str) -> bool:
+    text = prompt.lower()
+    return any(word in text for word in _TOOL_WORDS)
+
+
+def _nudge_for(prompt: str, answer: str, called_tool: bool) -> str | None:
+    """One chance to stop a small model from answering before it calls a tool."""
+    if not _expects_tool(prompt):
+        return None
+    if _refusal_without_tools(prompt) and not called_tool:
+        return None
+    echoed = answer.strip().lower() in _PLACEHOLDER_ANSWERS or answer.strip().lower() == (
+        "contoso robotics is an eligible new-grad match."
+    )
+    if called_tool and not echoed:
+        return None
+    if called_tool and echoed:
+        hint = _tool_hint(prompt)
+        return (
+            "That answer copied a placeholder. Use the tool result. "
+            f"If you still need data, call {hint}. Output one JSON object only."
+        )
+    hint = _tool_hint(prompt)
+    return (
+        f"You answered before calling a tool. Call {hint} now. "
+        'Output only {"action":"tool","tool":"' + hint + '","arguments":{...}} '
+        "or an ask_user object if the profile has no such fact. "
+        "Do not copy placeholder words."
+    )
 
 
 @dataclass
@@ -110,6 +202,7 @@ def run_agent(
     trace.write({"role": "user", "content": prompt})
     result = AgentResult(trace_path=trace.path)
     retries_left_for_turn = 1
+    nudges_left = 1
     steps = 0
     while steps < max_steps:
         steps += 1
@@ -161,6 +254,13 @@ def run_agent(
             }
         )
         if parsed["action"] == "final":
+            nudge = _nudge_for(prompt, parsed["answer"], bool(result.tools)) if nudges_left else None
+            if nudge:
+                nudges_left -= 1
+                messages.append({"role": "assistant", "content": completion.text})
+                messages.append({"role": "user", "content": nudge})
+                trace.write({"role": "user", "content": nudge, "nudge": True})
+                continue
             result.final = parsed["answer"]
             return result
         if parsed["action"] == "ask_user":

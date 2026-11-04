@@ -110,15 +110,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 TOOL_DESCRIPTIONS = {
-    "fetch_feed": "Refresh local jobs. Default source is the SimplifyJobs new-grad and Summer 2027 lists (listings.json). Greenhouse and Lever are optional and need a company slug. Never submits.",
-    "search_jobs": "Search jobs already in the local tracker.",
-    "get_job": "Fetch one stored job by id.",
-    "parse_resume": "Extract text from the local resume PDF or text file.",
-    "profile_get": "Read the local fictional-or-user profile.yaml. Pass section to read one key.",
-    "db_query": "Read the local tracker: applications, jobs, stats, a single SELECT, or export_csv.",
-    "db_upsert": "Insert or update a local application label. This does not submit an application.",
-    "score_fit": "Eligibility checks plus a 0-100 fit score with reasons, from profile.yaml.",
-    "ask_user": "Stop and ask the user for a fact the profile does not contain. Do not guess.",
+    "fetch_feed": "Load jobs into the tracker. source is simplify, new-grad, intern, greenhouse, or lever. greenhouse and lever need company.",
+    "search_jobs": "Search jobs already in the tracker. Arguments: query, company, location, source, remote_only, exclude_clearance, exclude_citizenship_required.",
+    "get_job": "Read one stored job. Argument: job_id.",
+    "parse_resume": "Read the local resume text. Optional path.",
+    "profile_get": "Read profile.yaml before drafting an answer. Optional section.",
+    "db_query": "List applications, jobs, or stats. Set export_csv true to write CSV. sql must be one SELECT.",
+    "db_upsert": "Save a local application label. record.job_id is required. This does not submit an application.",
+    "score_fit": "Score one job_id from 0 to 100 and say whether it is eligible. Call this before telling the user to apply.",
+    "ask_user": "Ask for a missing fact. Use this for salary, veteran status, disability, notice period, travel, references, or demographics.",
 }
 
 
