@@ -41,3 +41,17 @@ def test_real_groq_file_has_forty_traces() -> None:
     assert len(rows) == 40
     assert sum(row["model"] == "openai/gpt-oss-120b" for row in rows) == 33
     assert sum(row["model"] == "openai/gpt-oss-20b" for row in rows) == 7
+
+
+def test_v2_groq_file_is_in_the_default_groq_rows() -> None:
+    from pathlib import Path
+
+    from pocket_agent.mix import groq_rows
+
+    path = Path("data/teacher/teach_traces_v2.jsonl")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(rows) == 108
+    assert all(row["task_id"].startswith("t2-") for row in rows)
+    loaded, _ = groq_rows()
+    assert sum(row["source"] == "groq_v2" for row in loaded) >= 100
+    assert sum(row["source"] == "groq" for row in loaded) >= 35

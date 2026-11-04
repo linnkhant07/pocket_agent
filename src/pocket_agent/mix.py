@@ -1,4 +1,4 @@
-"""Training mix: 68 gold traces, scripted traces for the 309 teach tasks, and Groq traces.
+"""Training mix: gold traces, scripted traces for the teach tasks, and Groq traces (v1 and v2).
 
 Invalid teacher turns are dropped before training so the student does not imitate
 a first action that failed the schema. Dedupe is on the user prompt plus the
@@ -19,6 +19,8 @@ from pocket_agent.teacher_tasks import prepare_teach_home, teach_tasks
 from pocket_agent.trainset import iter_gold_rows, render_messages
 
 GROQ_PATH = Path(__file__).resolve().parents[2] / "data" / "teacher" / "teach_traces.jsonl"
+GROQ_V2_PATH = GROQ_PATH.with_name("teach_traces_v2.jsonl")
+GROQ_PATHS = (GROQ_PATH, GROQ_V2_PATH)
 
 
 def teach_gold_rows() -> list[dict[str, Any]]:
@@ -38,7 +40,18 @@ def teach_gold_rows() -> list[dict[str, Any]]:
 
 
 def groq_rows(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
-    path = path or GROQ_PATH
+    """Groq traces from one file, or from v1 and v2 (whichever exist) when path is None."""
+    paths = [path] if path else [p for p in GROQ_PATHS if p.exists()]
+    rows: list[dict[str, Any]] = []
+    dropped_empty = 0
+    for one in paths:
+        got, dropped = _groq_rows_from(one)
+        rows += got
+        dropped_empty += dropped
+    return rows, dropped_empty
+
+
+def _groq_rows_from(path: Path) -> tuple[list[dict[str, Any]], int]:
     rows = []
     dropped_empty = 0
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -51,7 +64,7 @@ def groq_rows(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
             continue
         rows.append(
             {
-                "source": "groq",
+                "source": "groq_v2" if record.get("task_id", "").startswith("t2-") else "groq",
                 "skill": record.get("skill") or "unknown",
                 "task_id": record.get("task_id") or "",
                 "model": record.get("model") or "",
