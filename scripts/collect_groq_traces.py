@@ -143,6 +143,19 @@ def _done(path: Path, key) -> set[str]:
     return out
 
 
+def _interleave(tasks: list[dict]) -> list[dict]:
+    """Round-robin by task family so a short run still covers every skill."""
+    groups: dict[str, list[dict]] = {}
+    for task in tasks:
+        groups.setdefault(task["id"].rsplit("-", 1)[0], []).append(task)
+    out: list[dict] = []
+    while any(groups.values()):
+        for family in list(groups):
+            if groups[family]:
+                out.append(groups[family].pop(0))
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -158,6 +171,7 @@ def main() -> int:
     accepted_ids = _done(args.out, lambda row: True)
     attempted_ids = _done(args.attempts, lambda row: row["model"] == args.model)
     todo = [t for t in teach_tasks() if t["id"] not in accepted_ids and t["id"] not in attempted_ids]
+    todo = _interleave(todo)
     if args.limit:
         todo = todo[: args.limit]
     backend = GroqBackend(args.model)
