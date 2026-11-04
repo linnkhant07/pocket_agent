@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-steps", type=int, default=64)
+    parser.add_argument("--save-steps", type=int, default=0, help="Write an adapter checkpoint every N optimizer steps")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--no-groq", action="store_true", help="Ablation: gold traces only, no Groq teacher traces")
@@ -48,7 +49,8 @@ def main() -> None:
         max_steps=args.max_steps,
         learning_rate=args.lr,
         logging_steps=5,
-        save_strategy="no",
+        save_strategy="steps" if args.save_steps else "no",
+        save_steps=args.save_steps or 500,
         report_to=[],
         max_length=768,
         assistant_only_loss=True,
@@ -74,7 +76,14 @@ def main() -> None:
     trainer.train()
     trainer.model.save_pretrained(args.output)
     tokenizer.save_pretrained(args.output)
-    print({"examples": len(rows), "output": str(args.output), "max_steps": args.max_steps})
+    print({
+        "examples": len(rows),
+        "trained_rows": len(trainer.train_dataset),
+        "output": str(args.output),
+        "max_steps": args.max_steps,
+        "global_step": trainer.state.global_step,
+        "epoch": trainer.state.epoch,
+    })
 
 
 if __name__ == "__main__":
