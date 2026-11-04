@@ -193,3 +193,19 @@ The collector got `--suite v2`, a compact teacher-only system prompt (the trace 
 | openai/gpt-oss-20b | 177 | 45 | 74,880 (15,104) | 9,056 |
 
 Groq's cap counter read 199,119 used for 120b and 199,875 for 20b when the runs stopped. The 120b number includes usage left over from the day before. The 108 accepted traces cover 98 distinct tasks. 65 of them (60%) are restraint tasks, because those were accepted more often than search and track tasks. By skill: track 37, prefill 35, find 21, screen 15. Files: `data/teacher/teach_traces_v2.jsonl`, `teach_attempts_v2.jsonl`, `teach_traces_v2.runs.jsonl`. `mix.groq_rows()` now loads v1 and v2 by default (v2 rows are tagged `groq_v2`), so the training mix is gold + teach-gold + Groq v1 + Groq v2. No training was run.
+
+## 2026-11-04 — Pause the fine-tune, build a form filler
+
+The longer mix run is the reason this stopped. Week 1 reached 16/50 and the held-out slice stayed at 37/60, behind the gold-only adapter at 43/60. A 0.6B model asked to do the whole task did not generalize to employers it had not trained on. The product is now a form filler: deterministic page reading and filling, a small SQLite memory, and a constrained local model only when a label is still unresolved.
+
+`pocket-agent fill <url>` uses Playwright. It does not click a submit control. The block is the accessible name (Submit, Apply), `type=submit`, an onclick that submits, and a last-step line such as "Step 2 of 2". Sensitive answers are asked unless the user has saved an explicit always-use value. The suite is 29 fictional forms on localhost (14 dev, 15 held-out, 18 of them Workday-shaped, including a Next button that is `type=submit` and a last Next that submits from a listener). Held-out labels are not copies of the dev labels. The answer key is the fictional Jordan Hale profile.
+
+Three clean runs with no GGUF loaded, then the held-out forms again under four perturbations:
+
+| Run | Dev fill | Held-out fill | Wrong fills | Asks | Submits | Crashes | Max seconds | RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| none, runs 1–3 | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 1.41 dev, 0.99 held | 646–659 MB |
+| slow, modal, conditional, validation | — | 111/111 each | 0 | 6/6 | 0 | 0 | 1.66, 1.06, 0.98, 1.27 | up to 672 MB |
+| Qwen3-0.6B Q8, one run | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 1.43 dev, 0.95 held | 1561 MB |
+
+Repeat-asks were 0. The 0.6B file is 639,446,688 bytes. It loaded in the process and was not called for any suite field, because the synonym table already matched. 1.7B and 4B were not scored for that reason. One extra prompt, "Preferred contact handle", with email, phone, and GitHub as the only allowed keys, returned `ask` in 2.93 s. This VM is Linux CPU. Chromium was headless. No real job site was opened, and the Mac Metal path was not run. The bar set for the suite (wrong-fill ≤1%, fill accuracy ≥95%, sensitive fields asked or explicitly saved, 0 submits, repeat-ask ≤2%, 0 crashes over 3 runs, under 90 s) is met by the rows above.

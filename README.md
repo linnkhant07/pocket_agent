@@ -2,9 +2,55 @@
 
 Repository: [github.com/linnkhant07/pocket_agent](https://github.com/linnkhant07/pocket_agent). The Python package and the `pocket-agent` command keep the hyphen. The GitHub repo name is `pocket_agent`.
 
-Pocket Agent is a free, MIT-licensed recruiting assistant that runs on your machine. It reads public job lists, scores them against a local `profile.yaml`, and keeps an application tracker in SQLite. It drafts answers from the profile and asks you when a fact is missing.
+Pocket Agent is a free, MIT-licensed recruiting assistant that runs on your machine. Version 1 fills a job application in a local browser and stops before submit. It also reads public job lists, scores them against a local `profile.yaml`, and keeps an application tracker in SQLite.
 
-It does not submit applications. There is no apply tool.
+It does not submit applications. There is no apply tool, and `pocket-agent fill` will not click Submit.
+
+## Form filler
+
+`pocket-agent fill <url>` opens the page in Chromium, reads every field it can see, and fills the ones that match the local profile. Anything it does not know, and anything sensitive, it asks in the terminal and stores the answer for the next form. Sensitive fields are gender, race, veteran status, disability, salary, criminal history, signatures and other legal attestations, SSN, date of birth, and government ID. Those are asked every time unless you answer yes to "Always use this answer on future forms?"
+
+The page reader is ordinary code. It uses the label, `aria-label`, `aria-labelledby`, and nearby text. It handles text, text areas, native selects, radio groups, checkboxes, dates, file upload, and ARIA comboboxes. Multi-step pages advance with Next or Continue. A button is not clicked when its type is submit, its label is Submit or Apply, its click handler submits, or the page says it is the last step (`Step 3 of 3`). The filled page stays open for you to review. The command then prints what it filled, what it asked, and what it skipped.
+
+Memory is `~/.pocket-agent/forms.sqlite`. Matching tries canonical synonyms, then a fuzzy match, then a local GGUF model. The model is only allowed to return JSON, and a fill must be one of the memory values it was shown. If the model file is missing, known fields still fill and unknown fields are asked.
+
+This was tested on Linux, not on a Mac. The reader and the form suite do not use a GPU. Apple Silicon is the machine the filler is aimed at; Metal was not run here.
+
+### Mac quickstart
+
+```bash
+uv sync --extra dev
+uv run playwright install chromium
+uv run pocket-agent init --no-pull
+mkdir -p ~/.pocket-agent/models
+curl -L -o ~/.pocket-agent/models/Qwen3-0.6B-Q8_0.gguf \
+  https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
+# Metal build on Apple Silicon. This VM used the CPU wheel instead.
+CMAKE_ARGS="-DGGML_METAL=on" uv pip install 'llama-cpp-python==0.3.36'
+uv run pocket-agent fill 'https://example.test/apply'
+```
+
+`--model` is `0.6b`, `1.7b`, `4b`, or `none`. `0.6b` is the default. The other files are `Qwen3-1.7B-Q8_0.gguf` from `Qwen/Qwen3-1.7B-GGUF` and `Qwen3-4B-Q4_K_M.gguf` from `Qwen/Qwen3-4B-GGUF`.
+
+```bash
+uv run pocket-agent eval-forms --runs 3 --model none --out form-eval.json
+```
+
+That serves 29 fictional applications on localhost and writes JSON and Markdown. Companies and the applicant are invented. It does not open a real job site.
+
+### Form-suite results
+
+Same Linux machine as the earlier runs: 4 cores, 15.6 GB RAM, no GPU. Chromium headless. The applicant is the fictional Jordan Hale profile plus a second fictional job. Three clean runs, then the 15 held-out forms again with a slow reveal, a modal, a conditional field, and a date field that rejects numeric formats. `none` means the GGUF was not loaded. The 0.6B row loaded `Qwen3-0.6B-Q8_0.gguf` (639,446,688 bytes). Every field in this suite matched before the model was asked, so the 0.6B counts match the deterministic run. RSS is the Python process plus Chromium, and on the 0.6B run it includes the weights.
+
+| Run | Dev fill | Held-out fill | Wrong fills | Asks | Repeat-asks | Submits | Crashes | Max seconds | RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| none, 3 runs | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 1.41 dev, 0.99 held | 646–659 MB |
+| none, slow / modal / conditional / validation | — | 111/111 on each | 0 | 6/6 | 0 | 0 | 0 | 1.66 / 1.06 / 0.98 / 1.27 | up to 672 MB |
+| 0.6B Q8, 1 run | 108/108 | 111/111 | 0 | 10/10 and 6/6 | 0 | 0 | 0 | 1.43 dev, 0.95 held | 1561 MB |
+
+1.7B and 4B were not scored. This suite never reached the model, so a larger file would not change these counts. A separate prompt, the label "Preferred contact handle" with email, phone, and GitHub in memory, returned `ask` in 2.93 s after a 0.74 s load. It did not invent a value.
+
+The reliability bar for this suite is wrong-fill at or under 1% of filled fields, fill accuracy at or above 95%, every sensitive or unknown field asked or filled from an explicit saved answer, no submit clicks, repeat-asks at or under 2% after the value is already stored, no crashes across the three runs, and under 90 s per form. The `none` runs and the 0.6B run meet it. Real Workday, Greenhouse, and Lever pages were not opened. A Mac, including Metal, was not used.
 
 The default job sources are the two SimplifyJobs lists:
 
