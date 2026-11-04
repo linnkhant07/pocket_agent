@@ -18,6 +18,59 @@ class Completion:
 
 
 @dataclass
+class OllamaBackend:
+    """Ollama native /api/chat.
+
+    The OpenAI shim on current Ollama builds ignores ``think: false`` for Qwen3
+    and returns an empty ``content`` plus a reasoning trace. The native API
+    honors ``think`` and returns the answer in ``content``. llama.cpp and MLX
+    still use the OpenAI-compatible client below.
+    """
+
+    base_url: str
+    timeout: float = 180.0
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str,
+        temperature: float = 0.0,
+        max_tokens: int = 400,
+    ) -> Completion:
+        host = self.base_url.rstrip("/")
+        if host.endswith("/v1"):
+            host = host[:-3]
+        url = host + "/api/chat"
+        body = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        started = time.perf_counter()
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(url, json=body)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Cannot reach Ollama at {host} ({exc}). Start it with `ollama serve`.") from exc
+        latency = time.perf_counter() - started
+        message = payload.get("message") or {}
+        text = message.get("content") or ""
+        prompt_tokens = payload.get("prompt_eval_count")
+        completion_tokens = payload.get("eval_count")
+        return Completion(
+            text=str(text),
+            latency_s=latency,
+            prompt_tokens=_int_or_none(prompt_tokens),
+            completion_tokens=_int_or_none(completion_tokens),
+        )
+
+
+@dataclass
 class OpenAICompatBackend:
     """POST {base_url}/chat/completions.
 
@@ -119,11 +172,9 @@ def backend_for(name: str, *, base_url: str | None = None, model: str | None = N
     }
     if key not in defaults:
         raise ValueError(f"unknown backend {name!r}")
-    extra: dict[str, Any] = {}
     if key == "ollama":
-        # Qwen3 thinking mode wraps JSON in <think> blocks. Ask Ollama to skip it.
-        extra = {"think": False}
-    return OpenAICompatBackend(base_url=base_url or defaults[key], extra_body=extra)
+        return OllamaBackend(base_url=base_url or defaults[key])
+    return OpenAICompatBackend(base_url=base_url or defaults[key])
 
 
 def _tool_call_to_action(tool_call: dict[str, Any]) -> str:

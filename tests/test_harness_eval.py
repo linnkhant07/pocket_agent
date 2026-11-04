@@ -27,6 +27,48 @@ def test_tiers_and_licenses() -> None:
         assert spec.license in PERMISSIVE_LICENSES
 
 
+def test_ollama_backend_disables_thinking(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "message": {"content": '{"action":"final","answer":"ok"}'},
+                "prompt_eval_count": 3,
+                "eval_count": 5,
+            }
+
+    class FakeClient:
+        def __init__(self, timeout: float) -> None:
+            del timeout
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def post(self, url: str, json: dict) -> FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr("pocket_agent.harness.backend.httpx.Client", FakeClient)
+    from pocket_agent.harness.backend import OllamaBackend
+
+    result = OllamaBackend("http://127.0.0.1:11434/v1").complete(
+        [{"role": "user", "content": "hi"}],
+        model="qwen3:0.6b",
+    )
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["json"]["think"] is False
+    assert result.completion_tokens == 5
+    assert result.text.startswith("{")
+
+
 def test_retry_and_trace(home: Path) -> None:
     (home / "profile.yaml").write_text(Path("examples/profile.yaml").read_text(encoding="utf-8"), encoding="utf-8")
     backend = MockBackend(["not json", '{"action":"final","answer":"recovered"}'])

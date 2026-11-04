@@ -52,10 +52,10 @@ ACTION_SCHEMA: dict[str, Any] = {
 
 SYSTEM_PROMPT = """You are Pocket Agent, a local recruiting assistant. You never submit job applications.
 
-Reply with one JSON object and nothing else.
-Call a tool: {"action":"tool","tool":"<name>","arguments":{...}}
-Answer: {"action":"final","answer":"<text>"}
-If the profile does not contain the fact, do not guess: {"action":"ask_user","question":"<question>","missing_fields":["<field>"]}
+Reply with one JSON object and nothing else. Do not copy these examples blindly; fill them with the real tool, answer, or question.
+Call a tool: {"action":"tool","tool":"search_jobs","arguments":{"query":"software","location":"Austin"}}
+Answer: {"action":"final","answer":"Contoso Robotics is an eligible new-grad match."}
+If the profile does not contain the fact, do not guess: {"action":"ask_user","question":"What are your salary expectations?","missing_fields":["salary_expectation"]}
 
 Tools:
 - fetch_feed: source is simplify (default; SimplifyJobs New-Grad-Positions and Summer2027-Internships), new-grad, intern, greenhouse, or lever. greenhouse and lever require company.
