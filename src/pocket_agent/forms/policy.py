@@ -27,7 +27,7 @@ SENSITIVE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(federal|state or local|public institution|government agency)\b", re.I), "gov_employment"),
     (re.compile(r"\b(spoken language|languages you speak|language proficiency)\b", re.I), "spoken_language"),
     (re.compile(r"\b(programming language|coding language|technical interview)\b", re.I), "interview_language"),
-    (re.compile(r"\b(on-site|onsite|hybrid|days a week|days per week|from our office|work from the office)\b", re.I), "onsite"),
+    (re.compile(r"\b(on-site|onsite|hybrid|(days|times) (a|per) week|from our ([\w-]+ ){0,3}office|work from the office)\b", re.I), "onsite"),
     (re.compile(r"\b(which office|office location|preferred office)\b", re.I), "office_choice"),
     (re.compile(r"\b(will you have|completed your degree|before your|by your start|anticipated start)\b", re.I), "degree_by_start"),
     (re.compile(r"\b(graduation window|required window|fall between)\b", re.I), "grad_window"),

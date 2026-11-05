@@ -56,11 +56,15 @@ PHRASES: dict[str, str] = {
     "telephone number": "phone",
     "city": "city",
     "town": "city",
+    "location city": "city",
+    "current location city": "city",
     "state": "region",
     "province": "region",
     "state province": "region",
     "region": "region",
     "country": "country",
+    "location": "location",
+    "current location": "location",
     "zip": "postal_code",
     "zip code": "postal_code",
     "postal code": "postal_code",
@@ -89,6 +93,8 @@ PHRASES: dict[str, str] = {
     "major": "field",
     "concentration": "field",
     "area of study": "field",
+    "discipline": "field",
+    "academic discipline": "field",
     "gpa": "gpa",
     "grade point average": "gpa",
     "cumulative gpa": "gpa",
@@ -304,6 +310,23 @@ def _fuzzy(text: str, section: str) -> Match | None:
     return Match(best_key, best_score, "fuzzy")
 
 
+_DATE_PART = re.compile(r"^(start|end) date (year|month)$")
+
+
+def date_part_key(label: str, section: str) -> str | None:
+    """Key for a split date ("Start date year") once the block is known to be work or education."""
+    found = _DATE_PART.match(phrase(label))
+    if not found:
+        return None
+    which, part = found.groups()
+    if section == "work":
+        return f"work.{which}"
+    if section == "education":
+        # The profile keeps a graduation date, not a start date.
+        return "graduation" if which == "end" else f"education_start_{part}"
+    return None
+
+
 def match_label(label: str, *, section: str = "", learned: dict[str, str] | None = None) -> Match | None:
     """Return the canonical key for a label, or None when it is ambiguous."""
     sensitive = sensitive_key(label)
@@ -312,9 +335,14 @@ def match_label(label: str, *, section: str = "", learned: dict[str, str] | None
     text = phrase(label)
     if not text:
         return None
-    if learned and text in learned:
-        key = learned[text]
-        if _section_ok(key, section):
+    dated = date_part_key(label, section)
+    if dated:
+        return Match(dated, 1.0, "exact")
+    if learned:
+        # Memory stores labels casefolded with punctuation; compare them the same way as the label.
+        key = learned.get(text) or {phrase(seen): saved for seen, saved in learned.items()}.get(text)
+        # "unknown" was once a shared slot for every unmatched question. Its answer belongs to no label.
+        if key and key != "unknown" and _section_ok(key, section):
             return Match(key, 1.0, "learned")
     if text in PHRASES and _section_ok(PHRASES[text], section):
         return Match(PHRASES[text], 1.0, "exact")

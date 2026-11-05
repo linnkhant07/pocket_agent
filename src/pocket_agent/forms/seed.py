@@ -82,6 +82,7 @@ def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "
     _put(memory, "city", str(location.get("city") or ""))
     _put(memory, "region", str(location.get("region") or ""))
     _put(memory, "country", str(location.get("country") or ""))
+    _put(memory, "location", ", ".join(str(part) for part in (location.get("city"), location.get("region")) if part))
     _put(memory, "willing_to_relocate", "Yes" if location.get("willing_to_relocate") else "No")
     _put(memory, "remote_ok", "Yes" if location.get("remote_ok") else "No")
     education = (profile.get("education") or [{}])[0]
