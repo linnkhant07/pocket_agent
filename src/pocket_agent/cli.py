@@ -497,7 +497,27 @@ def cmd_fill(args: argparse.Namespace) -> int:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
         page = browser.new_page()
-        run = fill_form(page, args.url, memory, resume if resume.exists() else None, ask, decider)
+        resume_file = resume if resume.exists() else None
+        runs = [fill_form(page, args.url, memory, resume_file, ask, decider)]
+        # At a gate the browser is handed to the user; pocket-agent never signs in, clicks Apply, or solves a CAPTCHA.
+        while runs[-1].gate and not runs[-1].error and not runs[-1].submits and len(runs) <= 6:
+            print(_GATE_HELP.get(runs[-1].gate, f"Stopped at a {runs[-1].gate} page."))
+            print("When the application form is showing, press Enter here to continue (or type q to stop).")
+            try:
+                if input("> ").strip().lower() in {"q", "quit", "stop"}:
+                    break
+            except EOFError:
+                break
+            runs.append(fill_form(page, args.url, memory, resume_file, ask, decider, resume=True))
+        run = runs[-1]
+        run.outcomes = [outcome for item in runs for outcome in item.outcomes]
+        run.submits = max(item.submits for item in runs)
+        if not run.gate and not run.error:
+            print("Stopped before submit. Review the browser window and submit it yourself, then press Enter to close it.")
+            try:
+                input()
+            except EOFError:
+                pass
         browser.close()
     memory.close()
     _print_fill(run)
@@ -516,9 +536,19 @@ def cmd_eval_forms(args: argparse.Namespace) -> int:
     return 0 if report["bar"]["pass"] else 1
 
 
+_GATE_HELP = {
+    "start": "This is the job posting, not the form. In the browser window, click Apply yourself (on Workday, then 'Apply Manually').",
+    "login": "This site wants you to sign in or create an account. Do that yourself in the browser window; pocket-agent never types passwords or creates accounts.",
+    "captcha": "The site is showing a CAPTCHA. Solve it yourself in the browser window.",
+    "consent": "The site is asking you to agree to something (for example a data privacy agreement after the resume upload). Read it and click Agree or Cancel yourself in the browser window.",
+}
+
+
 def _print_fill(run) -> None:
     if run.error:
         print(run.error)
+    if run.gate:
+        print(f"Stopped at a {run.gate} page: {_GATE_HELP.get(run.gate, '')}")
     print(f"Submit clicks: {run.submits}")
     for outcome in run.outcomes:
         if outcome.action == "fill" and outcome.value:
