@@ -45,8 +45,14 @@ class FormScore:
 
 
 def scripted_user(asked: Asked) -> UserAnswer:
+    """A sensitive answer is given once and then remembered. The suite does not opt out."""
+    from pocket_agent.forms.policy import is_sensitive_key
+
     value, always = SCRIPTED_ANSWERS.get(asked.key, ("", False))
-    return UserAnswer(value, always)
+    sensitive = asked.sensitive or is_sensitive_key(asked.key)
+    if sensitive and value.strip():
+        always = True
+    return UserAnswer(value, always_use=always, forget=sensitive and not always)
 
 
 def _forms_for_suite(suite: str) -> tuple:
@@ -218,7 +224,18 @@ def _grade(form: FormSpec, run: FormRun, before: dict, reusable: set[str], pertu
         elif spec.expect == "ask":
             score.ask_expected += 1
             saved = before.get(key)
-            explicit = bool(saved and saved.always_use and saved.value.strip())
+            # An answer given earlier in this same form is remembered and then reused.
+            # The pre-form snapshot does not contain it yet.
+            given_here = False
+            if outcome is not None:
+                for item in run.outcomes:
+                    if item is outcome:
+                        break
+                    if item.asked and item.key == key:
+                        given_here = True
+            explicit = bool(saved and saved.always_use and saved.value.strip()) or bool(
+                outcome and outcome.from_memory and given_here
+            )
             if outcome and (outcome.asked or (outcome.from_memory and explicit)):
                 score.ask_correct += 1
             else:

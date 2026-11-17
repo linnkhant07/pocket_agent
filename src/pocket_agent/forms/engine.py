@@ -74,6 +74,7 @@ class UserAnswer:
     value: str
     always_use: bool = False
     skip: bool = False
+    forget: bool = False  # Sensitive answers are remembered unless the user opts out.
 
 
 @dataclass
@@ -457,7 +458,8 @@ def _name_confirmation(page, field: ExtractedField, memory: Memory, snapshot: Pa
 
 
 def _option_labels(field: ExtractedField) -> list[str]:
-    return [option["label"] for option in field.options if option.get("label")]
+    options = getattr(field, "options", None) or []
+    return [option["label"] for option in options if isinstance(option, dict) and option.get("label")]
 
 
 def _may_reuse(entry, key: str | None, field: ExtractedField, memory: Memory) -> bool:
@@ -501,7 +503,9 @@ def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, 
         written = _write(page, field, confirmed, resume_path)
         if written:
             return _outcome(field, "full_name_confirmation", "fill", written, asked=False, from_memory=True)
-    learned = memory.learned_labels()
+    # A generic "Explain…" prompt is keyed by the full label plus the host and path.
+    # Its learned wording must not carry an answer onto another site.
+    learned = {} if _generic_label(field.label) else memory.learned_labels()
     match = match_label(field.label, section=field.section, learned=learned, options=labels)
     base = match.key if match and match.score >= 0.93 and not is_sensitive_key(match.key) else None
     key = indexed_key(base, field.group) if base else None
@@ -644,7 +648,9 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None)
         fingerprint = hashlib.sha256(normalize(field.label).encode()).hexdigest()
         if entry.source != "profile_exact:" + fingerprint:
             entry = None
-    sensitive = is_sensitive_key(key) or ask_key(field.label, field.section, _option_labels(field)) == key
+    canonical = ask_key(field.label, field.section, _option_labels(field))
+    # A status question is personal even when its storage key is a claim id, not a policy key.
+    sensitive = is_sensitive_key(key) or canonical == key or fact is not None
     if entry and entry.always_use and entry.value.strip() and not (_generic_label(field.label) and entry.source == "answer"):
         written = _write_for(page, field, entry.value, resume_path, key)
         if written and not (page is not None and _invalid(page, getattr(field, "uid", ""))):
@@ -668,18 +674,21 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None)
         return _outcome(field, key, "skip", "", asked=False, from_memory=False)
     existing = memory.get(key)
     stored = _canonical_answer(key, answer.value, existing)
+    # Sensitive answers are remembered for the same fact unless the user opts out.
+    # Other answers keep the flag the caller set. Opting out does not publish the fact.
+    remember = (not answer.forget) if sensitive else answer.always_use
     # A form whose options do not express the stored fact must not replace it, or drop its consent.
     if not (existing is not None and existing.value == stored and (existing.always_use or existing.source != "answer")):
         memory.put(
             key,
             stored,
-            always_use=answer.always_use,
+            always_use=remember,
             sensitive=sensitive,
             source="answer",
             label=field.label,
         )
-    if fact is not None and fact.key:
-        # A status answer is also a fact about the user, so it settles every other wording of the question.
+    if fact is not None and fact.key and remember:
+        # A status answer is also a fact about the user, so it settles every other wording of that same claim.
         stated = fact.fact(answer.value)
         if stated:
             memory.put(fact.key, stated, always_use=True, sensitive=True, source="answer")

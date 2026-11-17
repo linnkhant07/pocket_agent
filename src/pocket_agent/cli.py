@@ -30,6 +30,11 @@ from pocket_agent.teacher import collect_traces, teacher_settings_from_env
 from pocket_agent.tools import TOOL_NAMES, ToolContext, execute
 from pocket_agent.tracker import Tracker
 
+def sensitive_opt_out(reply: str) -> bool:
+    """True when the user answers yes to "Don't remember this answer on future forms?"."""
+    return reply.strip().lower() in {"y", "yes"}
+
+
 RESUME_LINES = [
     "Jordan Hale",
     "Austin, TX | jordan.hale@example.com | +1-555-0100",
@@ -594,12 +599,10 @@ def _fill(args: argparse.Namespace, home: Path, account=None) -> int:
         value = input("> (type /skip to leave blank) ").strip()
         if value.casefold() == "/skip":
             return UserAnswer("", skip=True)
-        always = False
-        if is_sensitive_key(asked.key):
-            always = input("Always use this answer on future forms? [Y/n] ").strip().lower() not in {"n", "no"}
-        else:
-            always = True
-        return UserAnswer(value, always)
+        if asked.sensitive or is_sensitive_key(asked.key):
+            forget = sensitive_opt_out(input("Don't remember this answer on future forms? [y/N] "))
+            return UserAnswer(value, always_use=not forget, forget=forget)
+        return UserAnswer(value, always_use=True)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=getattr(args, "headless", False))

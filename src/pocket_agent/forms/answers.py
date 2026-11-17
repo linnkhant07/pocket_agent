@@ -43,10 +43,13 @@ class AnsweringDecider:
         # Only applicant facts are evidence. A job posting is untrusted context, not applicant facts.
         # Contact details and demographics never go to a model. Experience, projects, and skills do.
         allowed = {key: profile[key] for key in ('experience', 'projects', 'skills') if key in profile}
-        private = re.compile(r"email|phone|address|birth|ssn|gender|race|ethnic|veteran|disab|salary|visa|sexual|pronoun|hispanic|orient", re.I)
+        private = re.compile(
+            r"email|phone|address|birth|ssn|gender|race|ethnic|veteran|disab|salary|visa|sexual|pronoun|hispanic|orient|sponsor|authoriz|citizenship|criminal|signature",
+            re.I,
+        )
         allowed["form_answers"] = {
             key: value for key, value in (profile.get("form_answers") or {}).items()
-            if not is_sensitive_key(key) and not private.search(key)
+            if not is_sensitive_key(key) and not private.search(str(key)) and not str(key).startswith("status.")
         }
         self.facts = flatten(allowed)
         self.resume_text = resume_text[:16000]

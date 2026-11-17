@@ -1,9 +1,10 @@
 """Prepare a private, disposable account snapshot for the existing local filler.
 
 No local single-user profile, memory, resume, or config can leak into this run.
-Network failure fails closed before a fill. After the fill, answers the user typed during it
-are saved to the account when the filler may reuse them; sensitive answers only with explicit
-always-use consent, exactly as local reuse works.
+Network failure fails closed before a fill. After the fill, non-sensitive answers the user
+typed are saved to the account when the filler may reuse them. Sensitive answers stay on
+this computer. Remembering one for later forms is not a cloud-sync opt-in; no such opt-in
+exists on the ask card.
 """
 from __future__ import annotations
 
@@ -74,6 +75,7 @@ def learned_answers(memory_path: Path) -> list[tuple[str, str, bool, str]]:
             labels.setdefault(key, label)
         return [(e.key, e.value, e.always_use, labels.get(e.key, "")[:2000]) for e in memory.all_entries()
                 if e.source == "answer" and e.key in reusable and e.value.strip()
+                and not e.sensitive and not is_sensitive_key(e.key) and not e.key.startswith("status.")
                 and 1 <= len(e.key) <= 200 and len(e.value) <= 20000]
     finally:
         memory.close()

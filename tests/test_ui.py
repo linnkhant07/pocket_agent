@@ -304,7 +304,7 @@ def test_desk_fill_asks_inline_syncs_answers_and_records_the_run(monkeypatch, tm
     assert seen[0]["env"] == env_before  # The fill ran without moving POCKET_AGENT_HOME for the server.
     assert seen[0]["resume"] == b"%PDF-" and seen[0]["options"]["navigate"] is True
     assert [r[1:3] for r in client.state.records] == [("https://jobs.example.test/apply", "review")]
-    # A sensitive answer is saved only when the ask card's checkbox is on. This client left it off.
+    # This client left always_use off, which is the opt-out. The answer is not uploaded.
     assert sorted(client.state.saved_answers) == [("referrer_name", "Sam Rivera", False, "referrer name")]
 
 

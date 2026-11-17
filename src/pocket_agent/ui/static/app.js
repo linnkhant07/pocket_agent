@@ -442,7 +442,8 @@ function showAsk(event) {
 }
 function sendAnswer(skip) {
   const value = skip ? '' : desk.control.value;
-  const alwaysUse = !skip && desk.asking && desk.asking.sensitive && $('askRemember').checked;
+  // The box is an opt-out. Unchecked means this answer is remembered on this computer.
+  const alwaysUse = !skip && desk.asking && desk.asking.sensitive && !$('askRemember').checked;
   desk.socket.send(JSON.stringify({type:'answer', value, skip, always_use: alwaysUse, question_id: desk.asking ? desk.asking.question_id : ''}));
   logLine(skip ? 'Skipped: ' + desk.asking.label : 'Answered: ' + desk.asking.label);
   desk.asking = null; setPhase('filling');

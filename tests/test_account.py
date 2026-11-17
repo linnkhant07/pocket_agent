@@ -271,8 +271,9 @@ def test_answers_typed_during_a_fill_are_saved_to_the_account(tmp_path, monkeypa
         return 0
 
     assert run_account_fill(args(), fill, client=client) == 0
-    assert sorted(client.saved_answers) == [("disability_status", "No", True), ("referrer_name", "Sam Rivera", False)]
-    assert "Saved 2 new answer(s)" in capsys.readouterr().out
+    # Remembering a sensitive answer reuses it locally. It is not an upload.
+    assert sorted(client.saved_answers) == [("referrer_name", "Sam Rivera", False)]
+    assert "Saved 1 new answer(s)" in capsys.readouterr().out
 
 
 def test_answer_sync_failure_does_not_fail_the_fill(tmp_path, monkeypatch, capsys):

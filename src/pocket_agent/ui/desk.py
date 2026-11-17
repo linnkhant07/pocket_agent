@@ -277,8 +277,10 @@ class Desk:
             return UserAnswer("", skip=True)
         if answer.skip or self._cancel:
             return UserAnswer("", skip=True)
-        # Sensitive answers are saved only when the ask card's checkbox is on.
-        return UserAnswer(answer.value, always_use=answer.always_use if asked.sensitive else False)
+        # Sensitive answers are remembered unless the ask card's "Don't remember this" box is checked.
+        if asked.sensitive:
+            return UserAnswer(answer.value, always_use=answer.always_use, forget=not answer.always_use)
+        return UserAnswer(answer.value, always_use=False)
 
     def _engine_event(self, event: dict) -> None:
         if event.get("type") == "step" and event.get("heading"):
