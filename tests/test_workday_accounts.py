@@ -312,6 +312,18 @@ def test_registration_requires_keyboard_validation_before_click(page):
     assert page.evaluate('window.requests') == 1
 
 
+def test_rejected_typed_password_is_not_saved_before_it_works(page):
+    """An existing password is stored only after Workday accepts it."""
+    html = auth_form(creating=False, after="<h1>Sign In</h1><div>Invalid Username/Password</div><input type=password>")
+    html = html.replace("<form", "<p>An account already exists for this email.</p><form", 1)
+    page.set_content(html)
+    vault = Vault()
+    step = WorkdayAccounts(URL, "person@example.test", vault, lambda _: "typed-secret").step(page, "login")
+    assert "Invalid Username/Password" in step.message
+    assert vault.writes == 0
+    assert vault.password is None
+
+
 def test_workday_registration_rejection_is_not_reported_as_success(page):
     page.set_content(auth_form(after='<h1>Create Account</h1><div>Invalid Username/Password</div><input type=password>'))
     step = WorkdayAccounts(URL, 'person@example.test', Vault(), lambda _: '').step(page, 'login')
