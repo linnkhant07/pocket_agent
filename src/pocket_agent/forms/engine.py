@@ -506,7 +506,12 @@ def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, 
     base = match.key if match and match.score >= 0.93 and not is_sensitive_key(match.key) else None
     key = indexed_key(base, field.group) if base else None
     entry = memory.get(key) if key else None
-    value = stored_value(memory, key, field.label) if key and _may_reuse(entry, key, field, memory) else ""
+    # "Have you worked here?" is No unless the question names an employer we have on file.
+    # That answer is computed from work history, so it does not need a stored entry.
+    if key == "previously_employed_here":
+        value = stored_value(memory, key, field.label)
+    else:
+        value = stored_value(memory, key, field.label) if key and _may_reuse(entry, key, field, memory) else ""
     if _generic_label(field.label) and not (entry and entry.always_use):
         value = ""
     ruled = bool(key and value.strip() and match and match.reason in {"exact", "tokens", "subset", "learned"})
@@ -661,15 +666,18 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None)
     ))
     if answer.skip:
         return _outcome(field, key, "skip", "", asked=False, from_memory=False)
-    stored = _canonical_answer(key, answer.value, memory.get(key))
-    memory.put(
-        key,
-        stored,
-        always_use=answer.always_use,
-        sensitive=sensitive,
-        source="answer",
-        label=field.label,
-    )
+    existing = memory.get(key)
+    stored = _canonical_answer(key, answer.value, existing)
+    # A form whose options do not express the stored fact must not replace it, or drop its consent.
+    if not (existing is not None and existing.value == stored and (existing.always_use or existing.source != "answer")):
+        memory.put(
+            key,
+            stored,
+            always_use=answer.always_use,
+            sensitive=sensitive,
+            source="answer",
+            label=field.label,
+        )
     if fact is not None and fact.key:
         # A status answer is also a fact about the user, so it settles every other wording of the question.
         stated = fact.fact(answer.value)
