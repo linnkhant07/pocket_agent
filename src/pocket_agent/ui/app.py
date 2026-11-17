@@ -1,375 +1,327 @@
-"""Localhost desk with hosted AI, user questions, memory, and settings."""
+"""Pocket Agent on 127.0.0.1: Google sign-in, profile, answers, history, and the Desk fill websocket.
 
+The browser holds only a short-lived access token in memory. The refresh token stays in Keychain,
+shared with the terminal, so reloading the tab or running `pocket-agent fill --account` needs no new sign-in.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
-import queue
-import threading
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import logging
+import re
 from pathlib import Path
+from typing import Annotated, Literal
+from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from starlette.datastructures import Headers
 
-from pocket_agent.cli import _copy_user_files
-from pocket_agent.forms.memory import Memory
-from pocket_agent.paths import data_home
-from pocket_agent.profile import dump_profile, load_profile
-from pocket_agent.resume import parse_resume
+from pocket_agent import ai_settings
+from pocket_agent.account import auth
+from pocket_agent.account.client import ACCOUNT_ERROR_MESSAGES, AccountClient, AccountError, settings
+from pocket_agent.account.profile import missing_profile_fields, validate_account_profile
+from pocket_agent.account.questions import questions
+from pocket_agent.account.resume_import import extract_resume, prepare_onboarding
+from pocket_agent.profile import ProfileError
+from pocket_agent.ui.desk import Desk, visible_browser
 
+MAX_RESUME = 10 * 1024 * 1024
 STATIC = Path(__file__).resolve().parent / "static"
 
 
-class SettingsIn(BaseModel):
-    model: str = "gpt"
-    headless: bool = False
+class StrictBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class MemoryIn(BaseModel):
-    value: str
-    always_use: bool = False
+class GoogleStartBody(StrictBody):
+    challenge: str = Field(pattern=r"^[A-Za-z0-9_-]{43}$")
+    state: str = Field(pattern=r"^[A-Za-z0-9_-]{43}$")
 
 
-class ProfileIn(BaseModel):
-    name: str = ""
-    email: str = ""
-    phone: str = ""
-    city: str = ""
-    region: str = ""
+class GoogleExchangeBody(StrictBody):
+    code: SecretStr
+    verifier: SecretStr
 
 
-def _settings_path() -> Path:
-    return data_home() / "ui-settings.json"
+class ProfileBody(StrictBody):
+    data: dict
+    expected_revision: int = Field(ge=0)
 
 
-def load_settings() -> dict:
-    raw = {"model": "gpt", "headless": False}
-    path = _settings_path()
-    if path.exists():
-        try:
-            stored = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            stored = {}
-        if isinstance(stored, dict):
-            raw.update({key: stored[key] for key in ("model", "headless") if key in stored})
-    if raw["model"] not in {"none", "gpt", "claude"}:
-        raw["model"] = "gpt"
-    raw["headless"] = bool(raw["headless"])
-    return raw
+class AnswerBody(StrictBody):
+    value: str = Field(max_length=20000)
+    label: str = Field(default="", max_length=1000)
 
 
-def save_settings(payload: SettingsIn) -> dict:
-    data = {"model": payload.model, "headless": payload.headless}
-    if data["model"] not in {"none", "gpt", "claude"}:
-        raise HTTPException(status_code=400, detail="unknown model")
-    path = _settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return data
+class AIBody(StrictBody):
+    api_key: SecretStr | None = Field(default=None, max_length=500)
+    model: str = Field(pattern=r"^[A-Za-z0-9._:/@-]{1,200}$")
 
 
-def model_inventory() -> list[dict]:
-    import os
-    return [{"size": provider, "file": variable, "present": bool(os.environ.get(variable)), "bytes": 0}
-            for provider, variable in (("gpt", "OPENAI_API_KEY"), ("claude", "ANTHROPIC_API_KEY"))]
+def project() -> tuple[str, str]:
+    url, key = settings()
+    if not url or not key:
+        raise HTTPException(503, "Set SUPABASE_URL and SUPABASE_ANON_KEY (for example in .env), then restart pocket-agent ui.")
+    return url, key
 
 
-def _memory() -> Memory:
-    return Memory(data_home() / "forms.sqlite")
+def public_account():
+    client = AccountClient(*project())
+    try:
+        yield client
+    finally:
+        client.close()
 
 
-def _profile_public() -> dict:
-    path = data_home() / "profile.yaml"
-    if not path.exists():
-        return {"name": "", "email": "", "phone": "", "city": "", "region": ""}
-    data = load_profile(path)
-    location = data.get("location") or {}
-    return {
-        "name": str(data.get("name") or ""),
-        "email": str(data.get("email") or ""),
-        "phone": str(data.get("phone") or ""),
-        "city": str(location.get("city") or ""),
-        "region": str(location.get("region") or ""),
-    }
+def signed_in(authorization: Annotated[str | None, Header()] = None):
+    if not authorization or not authorization.startswith("Bearer ") or not authorization[7:].strip():
+        raise HTTPException(401, "Sign in to continue.")
+    client = AccountClient(*project(), authorization[7:].strip())
+    try:
+        client.user()  # Supabase validates the token; no unverified JWT decoding.
+        yield client
+    finally:
+        client.close()
 
 
-class Desk:
-    """One filler thread. The browser window stays open so the user can submit."""
+def discard_resume(account, object_path: str) -> None:
+    try:
+        account.delete_resume(object_path)
+    except AccountError:
+        logging.getLogger(__name__).warning("Could not delete an unreferenced resume object.")
 
-    def __init__(self) -> None:
-        self.commands: queue.Queue = queue.Queue()
-        self.answers: queue.Queue = queue.Queue()
-        self.pending: queue.Queue = queue.Queue()
-        self.async_q: asyncio.Queue | None = None
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self.thread: threading.Thread | None = None
-        self.running = False
-        self._headless: bool | None = None
 
-    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.loop = loop
-        self.async_q = asyncio.Queue()
-        while not self.pending.empty():
-            self.async_q.put_nowait(self.pending.get_nowait())
+class LocalOnly:
+    """Any web page the user visits can reach 127.0.0.1, and this server holds their session.
 
-    def publish(self, event: dict) -> None:
-        if self.loop is None or self.async_q is None:
-            self.pending.put(event)
+    Reject other Host names (DNS rebinding), cross-site websockets, and cross-site writes.
+    """
+
+    def __init__(self, app, port: int) -> None:
+        self.app = app
+        self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        headers = Headers(scope=scope)
+        host = headers.get("host", "")
+        same_origin = headers.get("origin") == "http://" + host
+        allowed = host in self.hosts and (
+            same_origin if scope["type"] == "websocket"
+            else scope["method"] in ("GET", "HEAD") or same_origin or headers.get("sec-fetch-site") == "same-origin")
+        if allowed:
+            return await self.app(scope, receive, send)
+        if scope["type"] == "websocket":
+            await receive()
+            await send({"type": "websocket.close", "code": 1008})
             return
-        self.loop.call_soon_threadsafe(self.async_q.put_nowait, event)
-
-    def handle(self, message: dict) -> None:
-        kind = message.get("type")
-        if kind == "answer":
-            self.answers.put({"value": str(message.get("value") or ""), "remember": bool(message.get("remember"))})
-            return
-        if kind == "start":
-            url = str(message.get("url") or "")
-            if not url.startswith(("http://", "https://")):
-                self.publish({"type": "error", "message": "Paste a full http or https link."})
-                return
-        if kind in {"start", "continue", "stop"}:
-            self._ensure_worker()
-            self.commands.put(message)
-            return
-        self.publish({"type": "error", "message": "unknown message"})
-
-    def _ensure_worker(self) -> None:
-        if self.thread and self.thread.is_alive():
-            return
-        self.thread = threading.Thread(target=self._worker, name="pocket-ui-fill", daemon=True)
-        self.thread.start()
-
-    def _worker(self) -> None:
-        from playwright.sync_api import sync_playwright
-
-        from pocket_agent.forms.engine import Asked, UserAnswer, fill_form
-        from pocket_agent.forms.cloud import create_decider
-        from pocket_agent.forms.seed import seed_memory
-
-        try:
-            with sync_playwright() as playwright:
-                browser = None
-                page = None
-                while True:
-                    command = self.commands.get()
-                    if command.get("type") == "stop":
-                        break
-                    settings = load_settings()
-                    headless = bool(command.get("headless", settings["headless"]))
-                    if browser is None or headless != self._headless:
-                        if browser is not None:
-                            browser.close()
-                        browser = playwright.chromium.launch(headless=headless)
-                        page = browser.new_page()
-                        self._headless = headless
-                    assert page is not None
-                    self.running = True
-                    forget: list[str] = []
-                    memory = _memory()
-                    try:
-                        home = data_home()
-                        profile = load_profile(home / "profile.yaml")
-                        resume = home / "resume.pdf"
-                        seed_memory(memory, profile, resume_path=str(resume) if resume.exists() else "")
-                        model_name = str(command.get("model") or settings["model"])
-                        resume_text = parse_resume(resume).get("text", "") if model_name != "none" and resume.exists() else ""
-                        decider = create_decider(model_name, profile, resume_text, log=lambda text: self.publish({"type": "status", "text": text}))
-
-                        def ask(asked: Asked) -> UserAnswer:
-                            self.publish({
-                                "type": "ask",
-                                "key": asked.key,
-                                "label": asked.label,
-                                "question": asked.question,
-                                "kind": asked.kind,
-                                "options": list(asked.options),
-                                "sensitive": asked.sensitive,
-                                "section": asked.section,
-                                "remember": not asked.sensitive,
-                            })
-                            reply = self.answers.get()
-                            remember = bool(reply.get("remember"))
-                            if not remember:
-                                forget.append(asked.key)
-                            return UserAnswer(str(reply.get("value") or ""), always_use=remember)
-
-                        url = str(command.get("url") or "")
-                        if command.get("type") == "start" and not url.startswith(("http://", "https://")):
-                            self.publish({"type": "error", "message": "Paste a full http or https link."})
-                            continue
-                        self.publish({"type": "status", "text": "Filling. Nothing is submitted."})
-                        run = fill_form(
-                            page,
-                            url,
-                            memory,
-                            resume if resume.exists() else None,
-                            ask,
-                            decider,
-                            events=self.publish,
-                            navigate=command.get("type") != "continue",
-                        )
-                        self.publish({"type": "status", "text": decider.backend.summary() if decider is not None else "[AI] Disabled. Requests attempted: 0."})
-                        if run.error:
-                            self.publish({"type": "error", "message": run.error})
-                    except Exception as exc:  # noqa: BLE001 — surface filler failures on the desk
-                        self.publish({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-                    finally:
-                        for key in forget:
-                            memory.delete(key)
-                        memory.close()
-                        self.running = False
-                if browser is not None:
-                    browser.close()
-        except Exception as exc:  # noqa: BLE001
-            self.publish({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+        await JSONResponse({"detail": "This request did not come from Pocket Agent."}, status_code=403)(scope, receive, send)
 
 
-def create_app() -> FastAPI:
-    _copy_user_files(data_home())
-    desk = Desk()
+def security_headers(port: int):
+    policy = ("default-src 'self'; script-src 'self'; style-src 'self'; "
+              f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}; img-src 'self' data:; "
+              "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        desk.bind_loop(asyncio.get_running_loop())
-        yield
+    async def middleware(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = policy
+        return response
 
-    app = FastAPI(title="Pocket Agent", docs_url=None, redoc_url=None, lifespan=lifespan)
-    app.state.desk = desk
+    return middleware
+
+
+def create_app(*, port: int = 8000, launch=visible_browser) -> FastAPI:
+    app = FastAPI(title="Pocket Agent", docs_url=None, redoc_url=None, openapi_url=None)
+    app.middleware("http")(security_headers(port))
+    app.add_middleware(LocalOnly, port=port)
+    desk = Desk(lambda: auth.signed_in_client(sign_in_if_needed=False), launch=launch)
+
+    @app.exception_handler(AccountError)
+    async def account_error(request, exc):
+        code = getattr(exc, "status_code", 502)
+        if code not in (400, 401, 403, 409, 413, 422, 429, 503):
+            code = 502
+        messages = {401: "Your session has expired. Sign in again.", 403: "This action is not allowed.",
+                    409: "Your profile changed in another window. Reload before saving.",
+                    429: "Too many requests. Please try again later.",
+                    # 503s are local setup problems (Keychain, project settings) with locally written text.
+                    503: str(exc)}
+        detail = ACCOUNT_ERROR_MESSAGES.get(exc.reason) or messages.get(code, "The account service could not complete this request.")
+        return JSONResponse({"detail": detail}, status_code=code)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        return Response(status_code=204)
 
     @app.get("/")
-    def index() -> FileResponse:
+    def home():
         return FileResponse(STATIC / "index.html")
 
-    @app.get("/api/settings")
-    def get_settings() -> dict:
-        settings = load_settings()
-        return {**settings, "models": model_inventory()}
+    @app.get("/auth/callback")
+    def google_callback():
+        # JS checks per-tab state, removes the code from the URL, then exchanges it.
+        return FileResponse(STATIC / "index.html")
 
-    @app.put("/api/settings")
-    def put_settings(payload: SettingsIn) -> dict:
-        saved = save_settings(payload)
-        return {**saved, "models": model_inventory()}
+    @app.get("/app.js")
+    def script():
+        return FileResponse(STATIC / "app.js", media_type="text/javascript")
 
-    @app.get("/api/memory")
-    def get_memory() -> dict:
-        memory = _memory()
-        try:
-            entries = [
-                {
-                    "key": item.key,
-                    "value": item.value,
-                    "always_use": item.always_use,
-                    "sensitive": item.sensitive,
-                    "source": item.source,
-                }
-                for item in memory.all_entries()
-            ]
-        finally:
-            memory.close()
-        return {"entries": entries}
+    @app.get("/style.css")
+    def stylesheet():
+        return FileResponse(STATIC / "style.css", media_type="text/css")
 
-    @app.put("/api/memory/{key}")
-    def put_memory(key: str, payload: MemoryIn) -> dict:
-        if desk.running:
-            raise HTTPException(status_code=409, detail="Wait until the current form finishes.")
-        memory = _memory()
-        try:
-            current = memory.get(key)
-            memory.put(
-                key,
-                payload.value,
-                always_use=payload.always_use,
-                sensitive=current.sensitive if current else False,
-                source=current.source if current else "answer",
-            )
-        finally:
-            memory.close()
+    @app.post("/api/auth/google/start")
+    def google_start(body: GoogleStartBody, request: Request, account=Depends(public_account)):
+        callback = str(request.base_url).rstrip("/") + "/auth/callback?pa_state=" + body.state
+        return {"url": account.google_sign_in_url(callback, body.challenge)}
+
+    @app.post("/api/auth/google/exchange")
+    def google_exchange(body: GoogleExchangeBody, account=Depends(public_account)):
+        verifier = body.verifier.get_secret_value()
+        code = body.code.get_secret_value()
+        if not re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", verifier) or not 1 <= len(code) <= 2048:
+            raise HTTPException(422, "Google sign-in did not finish. Try again.")
+        ring = auth._keyring()  # Before the exchange, so a missing Keychain does not burn the one-time code.
+        session = account.exchange_oauth_code(code, verifier)
+        if not isinstance(session, dict) or not isinstance(session.get("access_token"), str) or not session["access_token"]:
+            raise HTTPException(502, "Google sign-in returned no session. Try again.")
+        auth.store_session(ring, *project(), session)
+        user = session.get("user") if isinstance(session.get("user"), dict) else {}
+        return {"access_token": session["access_token"], "expires_in": session.get("expires_in", 3600),
+                "email": str(user.get("email") or "")}
+
+    @app.post("/api/session")
+    def session():
+        token = auth.access_token()
+        if token is None:
+            raise HTTPException(401, "Sign in to continue.")
+        return {"access_token": token}
+
+    @app.post("/api/auth/logout")
+    def logout():
+        auth.sign_out()
         return {"ok": True}
 
-    @app.delete("/api/memory/{key}")
-    def delete_memory(key: str) -> dict:
-        if desk.running:
-            raise HTTPException(status_code=409, detail="Wait until the current form finishes.")
-        memory = _memory()
+    # AI keys never go back to the browser; it only learns whether one is saved.
+    @app.get("/api/ai")
+    def ai_status():
+        return ai_settings.status()
+
+    @app.put("/api/ai/{provider}")
+    def save_ai(provider: Literal["gpt", "claude"], body: AIBody):
+        key = body.api_key.get_secret_value().strip() if body.api_key else ""
+        if key and (len(key) < 8 or any(c.isspace() for c in key)):
+            raise HTTPException(422, "That does not look like an API key. Paste the whole key.")
+        ai_settings.save(provider, key=key or None, model_id=body.model)
+        return ai_settings.status()
+
+    @app.delete("/api/ai/{provider}")
+    def forget_ai_key(provider: Literal["gpt", "claude"]):
+        ai_settings.forget_key(provider)
+        return ai_settings.status()
+
+    @app.get("/api/account")
+    def account_snapshot(account=Depends(signed_in)):
+        return {**account.snapshot(), "user": account.user(), "questions": questions()}
+
+    @app.put("/api/account/profile")
+    def profile(body: ProfileBody, account=Depends(signed_in)):
+        data = body.data
+        if len(json.dumps(data).encode()) > 256 * 1024:
+            raise HTTPException(413, "Profile must be 256 KB or smaller.")
+        if "form_answers" in data:
+            raise HTTPException(422, "Save questionnaire answers separately from your profile.")
+        path = data.get("resume_object")
+        if path:
+            uid = str(UUID(account.user()["id"]))
+            try:
+                owner, filename = path.split("/")
+                if owner != uid or str(UUID(filename.removesuffix(".pdf"))) + ".pdf" != filename:
+                    raise ValueError()
+            except (AttributeError, ValueError):
+                raise HTTPException(422, "Choose a resume belonging to this account.") from None
         try:
-            memory.delete(key)
-        finally:
-            memory.close()
+            data = validate_account_profile(data)
+        except ProfileError:
+            raise HTTPException(422, "Check your profile: name, education (school and degree), skills, and preferences are required.") from None
+        data.setdefault("onboarding", {})["missing_fields"] = missing_profile_fields(data)
+        return account.save_profile(data, body.expected_revision)
+
+    @app.put("/api/account/answers/{key}")
+    def save_answer(key: str, body: AnswerBody, account=Depends(signed_in)):
+        known = {q["key"] for q in questions()}
+        # Answers learned during fills have keys outside the questionnaire; they stay editable too.
+        if key not in known and key not in {a.get("key") for a in account.snapshot()["answers"]}:
+            raise HTTPException(422, "Choose a questionnaire question.")
+        account.save_answer(key, body.value, True, body.label)
         return {"ok": True}
 
-    @app.get("/api/profile")
-    def get_profile() -> dict:
-        return _profile_public()
+    @app.delete("/api/account/answers/{key}")
+    def delete_answer(key: str, account=Depends(signed_in)):
+        if len(key) > 200:
+            raise HTTPException(422, "Invalid question key.")
+        account.delete_answer(key)
+        return {"ok": True}
 
-    @app.put("/api/profile")
-    def put_profile(payload: ProfileIn) -> dict:
-        if desk.running:
-            raise HTTPException(status_code=409, detail="Wait until the current form finishes.")
-        path = data_home() / "profile.yaml"
-        data = load_profile(path)
-        data["name"] = payload.name.strip() or data.get("name")
-        data["email"] = payload.email.strip()
-        data["phone"] = payload.phone.strip()
-        location = dict(data.get("location") or {})
-        location["city"] = payload.city.strip()
-        location["region"] = payload.region.strip()
-        data["location"] = location
-        dump_profile(path, data)
-        memory = _memory()
+    @app.delete("/api/account")
+    def delete_account(account=Depends(signed_in)):
+        account.delete_account_data()
+        return {"ok": True}
+
+    @app.post("/api/account/resume")
+    def upload_resume(file: UploadFile = File(), expected_revision: int = Form(default=0, ge=0), account=Depends(signed_in)):
         try:
-            from pocket_agent.forms.seed import seed_memory
-
-            resume = data_home() / "resume.pdf"
-            seed_memory(memory, data, resume_path=str(resume) if resume.exists() else "")
+            content = file.file.read(MAX_RESUME + 1)
         finally:
-            memory.close()
-        return _profile_public()
-
-    async def upload_resume(file: UploadFile) -> dict:
-        if desk.running:
-            raise HTTPException(status_code=409, detail="Wait until the current form finishes.")
-        dest = data_home() / "resume.pdf"
-        dest.write_bytes(await file.read())
-        parsed = parse_resume(dest)
-        data = load_profile(data_home() / "profile.yaml")
-        memory = _memory()
+            file.file.close()
+        if len(content) > MAX_RESUME:
+            raise HTTPException(413, "Resume must be 10 MB or smaller.")
+        if not content.startswith(b"%PDF-"):
+            raise HTTPException(422, "Choose a PDF resume.")
+        current = account.snapshot().get("profile")
+        if (current["revision"] if current else 0) != expected_revision:
+            raise HTTPException(409, "Your account changed in another tab. Reload before uploading.")
         try:
-            from pocket_agent.forms.seed import seed_memory
-
-            seed_memory(memory, data, resume_path=str(dest))
-        finally:
-            memory.close()
-        return {"ok": True, "lines": parsed.get("lines") or [], "emails": parsed.get("emails") or []}
-
-    app.add_api_route("/api/resume", upload_resume, methods=["POST"])
-
-    @app.get("/api/resume")
-    def read_resume() -> dict:
-        parsed = parse_resume(home=data_home())
-        return {"ok": bool(parsed.get("ok")), "lines": parsed.get("lines") or [], "emails": parsed.get("emails") or []}
+            extracted = extract_resume(content)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        previous = (current["data"] or {}).get("resume_object") if current else None
+        object_path = account.upload_resume(content)
+        try:
+            draft = prepare_onboarding(current["data"] if current else {}, extracted, object_path)
+            row = account.save_profile(draft, expected_revision)
+        except BaseException:
+            discard_resume(account, object_path)  # Nothing points at it; do not keep the PDF.
+            raise
+        if previous and previous != object_path:
+            discard_resume(account, previous)  # Replaced resumes are personal data; delete them.
+        return {"object_path": object_path, "profile": row, "warnings": extracted["warnings"],
+                "missing_fields": missing_profile_fields(draft), "parser": extracted["parser"]}
 
     @app.websocket("/ws")
-    async def socket(websocket: WebSocket) -> None:
+    async def fill_socket(websocket: WebSocket):
         await websocket.accept()
+        events = desk.subscribe()
 
-        async def pump() -> None:
-            assert desk.async_q is not None
+        async def pump():
             while True:
-                event = await desk.async_q.get()
-                await websocket.send_json(event)
+                await websocket.send_json(await events.get())
 
         sender = asyncio.create_task(pump())
         try:
             while True:
-                message = await websocket.receive_json()
-                desk.handle(message)
-        except Exception:
+                desk.handle(await websocket.receive_json())
+        except (WebSocketDisconnect, ValueError):
+            pass
+        finally:
             sender.cancel()
+            desk.unsubscribe(events)
 
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

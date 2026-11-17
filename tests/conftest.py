@@ -14,5 +14,25 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def _private_readings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test reads status questions into its own cache, never the user's ~/.pocket-agent."""
+    from pocket_agent.forms import status
+
+    monkeypatch.setattr(status, "readings_path", lambda: tmp_path / "readings.sqlite")
+
+
+@pytest.fixture(autouse=True)
 def _pin_today(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POCKET_AGENT_TODAY", os.environ.get("POCKET_AGENT_TODAY", "2026-11-04"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that need a Keychain install their own fake; none may read or write the user's real one."""
+    from pocket_agent.account import auth
+    from pocket_agent.account.client import AccountError
+
+    def unavailable():
+        raise AccountError("Keychain is disabled in tests.", 503)
+
+    monkeypatch.setattr(auth, "_keyring", unavailable)

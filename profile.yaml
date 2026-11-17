@@ -1,0 +1,228 @@
+schema_version: 1
+canary: POCKET-AGENT-CANARY-7f3a
+name: Khant Nyi Hlaing
+email: khantnyihlaingkh@gmail.com
+phone: '6267806708'
+location:
+  city: Los Angeles
+  region: LA
+  country: US
+  willing_to_relocate: true
+  remote_ok: true
+education:
+- school: University of California, Los Angeles (UCLA)
+  degree: BS
+  field: Computer Science
+  graduation: 2027-06
+  coursework:
+  - Data Structures & Algorithms
+  - Machine Learning (Cornell)
+  - Object-Oriented Programming
+  activities:
+  - Uber SWE Fellow
+  - Engineering Competition Society VP
+  - ACM Hack
+citizenship:
+  country: MM
+  authorized_to_work:
+  - US
+  requires_sponsorship: false
+  clearance: none
+  permanent_residence:
+  - US
+experience:
+- org: Statewide California Earthquake Center
+  title: Software Engineer Intern
+  location: Pasadena, CA
+  start: 2025-06
+  end: 2025-08
+  highlights:
+  - Developed a React earthquake assessment platform providing seismic metrics across
+    10+ regions by integrating geocoded reports, satellite data, and retrieval-augmented
+    AI pipelines to support an early warning system.
+  - Improved GenAI RAG workflows by 40% with LangGraph and Google Cloud (GCS, BigQuery).
+  - Modernized legacy map-generation services with scalable retrieval workflows and
+    APIs for querying and visualizing real-time hazard metrics, eliminating manual
+    terminal scripting.
+- org: California Institute of Technology (Caltech)
+  title: Machine Learning Intern
+  location: Pasadena, CA
+  start: 2024-06
+  end: 2024-08
+  highlights:
+  - Designed and trained supervised machine learning models for stellar classification,
+    evaluating precision/recall tradeoffs on time-series satellite data.
+  - Built ML preprocessing pipelines using Scikit-learn, FastAPI, and AWS S3 for 5GB+
+    of time-series datasets, reducing manual cleaning effort by 40% through validation,
+    normalization, and error handling.
+  - Implemented data recovery and imputation modules restoring 50% of incomplete astronomical
+    records.
+- org: CariCon (Break Through Tech Fellow)
+  title: Machine Learning Intern
+  location: Remote
+  start: 2024-01
+  end: 2024-04
+  highlights:
+  - Developed an embedding-based recommendation system matching underrepresented authors
+    with publishing houses using profile embeddings and cosine similarity.
+  - Applied density-based and spherical clustering to group authors and publishers
+    by semantic similarity, improving recommendation relevance and cold-start robustness.
+  - Designed and deployed model-backed REST APIs using FastAPI and SQLAlchemy, delivering
+    10+ personalized recommendations per user with proprietary publisher datasets.
+skills:
+  languages:
+  - Python
+  - Java
+  - C
+  - C++
+  - JavaScript
+  - TypeScript
+  - HTML
+  - CSS
+  - SQL
+  - Shell
+  frameworks:
+  - Spring Boot
+  - Spring MVC
+  - React
+  - Node.js
+  - Maven
+  - FastAPI
+  - PyTest
+  - LangChain
+  infrastructure:
+  - Docker
+  - Google Cloud Platform
+  - Amazon Web Services
+  - GitHub Actions
+  - Kubernetes
+  tools_databases:
+  - PostgreSQL
+  - Firebase
+  - MongoDB
+  - Linux
+  - Git
+  - VS Code
+  - IntelliJ
+  - PyCharm
+  - Postman
+  methods:
+  - Agile
+preferences:
+  roles:
+  - software engineer
+  - new grad
+  - intern
+  locations:
+  - Austin
+  - Remote
+  - San Francisco
+  target_start: ''
+links:
+  linkedin: https://www.linkedin.com/in/khant-hlaing/
+  github: https://github.com/khantnhl
+  website: https://khantnhl.vercel.app/
+constraints:
+  exclude_companies: []
+  notes: ''
+form_answers:
+  how_did_you_hear: Internet - LinkedIn
+  willing_to_relocate: 'Yes'
+  work_authorization: 'Yes'
+  requires_sponsorship: 'No'
+  company.zebra.family_members:
+    value: 'No'
+    always_use: true
+  non_compete:
+    value: 'No'
+    always_use: true
+  export_control:
+    value: 'Yes'
+    always_use: true
+    label: In line with U.S. export control laws, Zebra may gather nationality details
+      for specific roles to determine licensing or technology control needs. This
+      process is purely for compliance purposes and does not impact hiring decisions.
+      Zebra is committed to equal opportunity and does not discriminate based on nationality
+      or any other protected characteristic. Please review the countries below and
+      answer the subsequent questions accordingly. Afghanistan Armenia Azerbaijan
+      Belarus Bosnia-Herzegovina Burundi Central African Republic China, or other
+      Chinese territory Cuba Cyprus Democratic Republic of the Congo Egypt Eritrea
+      Guinea (Republic) Guinea Bissau Haiti Iran Iraq Kyrgyzstan Lebanon Maldives
+      Mali Moldova Myanmar (Burma) Nicaragua North Korea Russia Saudi Arabia Somalia
+      South Sudan Sudan (North) Syria Tunisia Turkey Ukraine (regions of Crimea, Luhansk,
+      Donetsk, Zaporizhzhia, Kherson Oblasts) Venezuela Yemen Zimbabwe Do you now,
+      or have you held citizenship in any of the countries listed above?
+  other_residency_or_citizenship:
+    value: 'Yes'
+    always_use: true
+    label: Do you currently hold permanent residence or citizenship in another country?
+  phone_device_type: Mobile
+  phone_extension: ''
+  website: https://khantnhl.vercel.app/
+  race:
+    value: Asian
+    always_use: true
+  veteran_status:
+    value: I am not a protected veteran
+    always_use: true
+  disability_status:
+    value: No, I do not have a disability
+    always_use: true
+personal:
+  address_line_1: 9303 Ramona Blvd
+  address_line_2: Rosemead
+  city: Rosemead
+  region: California
+  postal_code: '91770'
+  county: Los Angeles
+  country: United States
+  phone: '6267806708'
+  email: khantnyihlaingkh@gmail.com
+  race_ethnicity: Asian (Southeast Asian)
+projects:
+- name: KelSelYay - Crisis Response App
+  technologies:
+  - React
+  - Express
+  - Node.js
+  - AWS S3
+  - Next.js
+  - MongoDB
+  - Vercel
+  - Render
+  highlights:
+  - Built a real-time rescue app to report and locate missing persons after the Thailand-Myanmar
+    7.7 earthquake.
+  - Reached 7.1K+ users coordinating 50+ missing persons; featured on national news.
+  - Led a four-person Agile team, designed the system architecture, and organized
+    sprint planning with Jira.
+  - Migrated image handling from Cloudinary API to AWS S3, cutting hosting costs by
+    90%.
+- name: JourneyAI
+  technologies:
+  - React
+  - Express
+  - Firebase
+  - Gemini API
+  - Google Places API
+  highlights:
+  - Built an AI-powered travel planning app generating personalized itineraries for
+    100+ active users.
+  - Cut API latency by 40% by optimizing React state management and eliminating redundant
+    re-renders.
+  - Implemented CI/CD pipelines with automated testing and deployment to Vercel.
+- name: Live Coding Platform
+  technologies:
+  - TypeScript
+  - React
+  - SQL
+  - Node.js
+  - Express.js
+  - PostgreSQL
+  - Socket.io
+  - Judge0 API
+  highlights:
+  - Led a three-person team developing a real-time code editor tested in 50+ mock
+    interviews with Judge0 API.
+  - Reduced WebSocket round-trip latency by 20% through timestamp-based monitoring.
+  - Implemented reusable template classes for cross-language compilation and execution.

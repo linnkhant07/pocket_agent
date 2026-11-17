@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     fill.add_argument("url")
     fill.add_argument("--model", default="gpt", choices=["none", "gpt", "claude"], help="Hosted AI provider (API key and POCKET_AGENT_AI_MODEL required)")
     fill.add_argument("--resume", type=Path)
+    fill.add_argument("--account", action="store_true", help="Use a signed-in Supabase account snapshot instead of local files")
     fill.add_argument("--workday-accounts", action="store_true", help="Create/sign in to Workday accounts using macOS Keychain")
     mode = fill.add_mutually_exclusive_group()
     mode.add_argument("--unattended", dest="unattended", action="store_true", default=None, help="Never prompt in the terminal; use saved answers and report unresolved fields")
@@ -159,10 +160,15 @@ def main(argv: list[str] | None = None) -> int:
     fill.add_argument("--close-on-finish", action="store_true", help="Close the browser after writing the result")
     fill.set_defaults(func=cmd_fill)
 
-    ui = sub.add_parser("ui", help="Open the local form desk in a browser")
-    ui.add_argument("--port", type=int, default=8765)
+    ui = sub.add_parser("ui", help="Open Pocket Agent in your browser: sign in, set up your profile, and fill applications")
+    ui.add_argument("--port", type=int, default=8000, help="Google sign-in returns only to allowlisted ports (default 8000)")
     ui.add_argument("--no-open", action="store_true", help="Do not open a browser window")
     ui.set_defaults(func=cmd_ui)
+
+    login = sub.add_parser("login", help="Sign this computer in with Google (shared with pocket-agent ui)")
+    login.set_defaults(func=cmd_login)
+    sub.add_parser("logout", help="Sign this computer out (also signs out pocket-agent ui)").set_defaults(func=cmd_logout)
+    sub.add_parser("whoami", help="Show which account this computer is signed in as").set_defaults(func=cmd_whoami)
 
     eval_forms = sub.add_parser("eval-forms", help="Score the local fictional application suite")
     eval_forms.add_argument("--suite", choices=["easy", "hard", "both"], default="easy")
@@ -483,15 +489,45 @@ def cmd_ui(args: argparse.Namespace) -> int:
 
     from pocket_agent.ui.app import create_app
 
+    # Loopback only: the server holds the Keychain session. Google returns to this exact origin.
     host = "127.0.0.1"
-    app = create_app()
+    app = create_app(port=args.port)
     if not args.no_open:
         threading.Timer(0.6, lambda: webbrowser.open(f"http://{host}:{args.port}")).start()
     uvicorn.run(app, host=host, port=args.port, log_level="info")
     return 0
 
 
+def cmd_login(args: argparse.Namespace) -> int:
+    from pocket_agent.account.auth import login
+    return login()
+
+
+def cmd_logout(args: argparse.Namespace) -> int:
+    from pocket_agent.account.auth import logout
+    return logout()
+
+
+def cmd_whoami(args: argparse.Namespace) -> int:
+    from pocket_agent.account.auth import signed_in_client
+    client = signed_in_client(sign_in_if_needed=False)
+    try:
+        user = client.user()
+        print(f"Signed in as {user.get('email') or user['id']}")
+    finally:
+        client.close()
+    return 0
+
+
 def cmd_fill(args: argparse.Namespace) -> int:
+    if getattr(args, "account", False):
+        from pocket_agent.account.runner import run_account_fill
+        return run_account_fill(args, _fill)
+    return _fill(args, data_home())
+
+
+def _fill(args: argparse.Namespace, home: Path, account=None) -> int:
+    """Fill from the files in home. An account fill passes its private temp home and reports its result."""
     from playwright.sync_api import sync_playwright
 
     from pocket_agent.forms.engine import Asked, UserAnswer, fill_form
@@ -500,16 +536,16 @@ def cmd_fill(args: argparse.Namespace) -> int:
     from pocket_agent.forms.policy import is_sensitive_key
     from pocket_agent.forms.seed import seed_memory
 
+    config = load_config(home)
     if args.unattended is None:
-        args.unattended = bool((load_config().get("fill") or {}).get("unattended", False))
-    home = data_home()
+        args.unattended = bool((config.get("fill") or {}).get("unattended", False))
     profile_path = home / "profile.yaml"
     if not profile_path.exists():
         print("No profile yet. Run `pocket-agent init` first.")
         return 1
     profile = load_profile(profile_path)
-    resume = Path(args.resume or load_config().get("resume_path") or (home / "resume.pdf"))
-    if resume.exists():
+    resume = account.resume if account else Path(args.resume or config.get("resume_path") or (home / "resume.pdf"))
+    if resume.exists() and account is None:
         from pocket_agent.resume import resume_contact_profile
         try:
             profile = resume_contact_profile(profile, resume)
@@ -540,7 +576,7 @@ def cmd_fill(args: argparse.Namespace) -> int:
     memory = Memory(home / "forms.sqlite")
     seed_memory(memory, profile, resume_path=str(resume) if resume.exists() else "")
     resume_text = parse_resume(resume).get("text", "") if args.model != "none" and resume.exists() else ""
-    decider = create_decider(args.model, profile, resume_text)
+    decider = create_decider(args.model, profile, resume_text, home=home)
 
     unresolved: list[str] = []
 
@@ -555,7 +591,7 @@ def cmd_fill(args: argparse.Namespace) -> int:
             return UserAnswer("", skip=True)
         always = False
         if is_sensitive_key(asked.key):
-            always = input("Always use this answer on future forms? [y/N] ").strip().lower() == "y"
+            always = input("Always use this answer on future forms? [Y/n] ").strip().lower() not in {"n", "no"}
         return UserAnswer(value, always)
 
     with sync_playwright() as playwright:
@@ -594,6 +630,9 @@ def cmd_fill(args: argparse.Namespace) -> int:
         run = runs[-1]
         run.outcomes = [outcome for item in runs for outcome in item.outcomes]
         run.submits = max(item.submits for item in runs)
+        if account is not None:
+            account.status = "blocked" if run.error or run.gate or run.submits else run.status
+            account.unresolved = list(dict.fromkeys(unresolved + run.unresolved))
         ai_stats = decider.backend.stats() if decider is not None else {"attempted": 0, "responses_received": 0, "completed": 0, "failed": 0}
         print(decider.backend.summary() if decider is not None else "[AI] Disabled. Requests attempted: 0.")
         if args.unattended:

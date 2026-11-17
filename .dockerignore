@@ -1,0 +1,15 @@
+.git
+.venv
+.claude
+.codex
+.env
+.env.*
+data
+tests
+profile.yaml
+/*.pdf
+*.sqlite*
+*.db
+__pycache__
+.pytest_cache
+form-eval.*

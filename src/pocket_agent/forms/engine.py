@@ -64,6 +64,7 @@ class FieldOutcome:
     asked: bool
     from_memory: bool
     via_model: bool = False
+    because: str = ""  # for a status answer: the stated facts it follows from
 
 
 @dataclass
@@ -81,6 +82,7 @@ class FormRun:
     ai_context: str | None = None
     unresolved: list[str] = field(default_factory=list)
     validation_errors: list[str] = field(default_factory=list)
+    answerer: object = None  # status.StatusAnswerer for this fill
 
 
 def fill_form(
@@ -100,6 +102,9 @@ def fill_form(
     if navigate is not None:
         resume = not navigate
     run = FormRun(url=url)
+    from pocket_agent.forms.status import StatusAnswerer
+
+    run.answerer = StatusAnswerer(memory, reader=getattr(llm, "status_reader", None))
     try:
         page.set_default_timeout(8000)
         if not resume:
@@ -189,6 +194,7 @@ def fill_form(
         _emit(events, {"type": "error", "message": run.error})
     else:
         _emit(events, {"type": "review", **counts, "submits": run.submits})
+    run.answerer.close()
     return run
 
 
@@ -200,6 +206,8 @@ def review_counts(outcomes: list[FieldOutcome]) -> dict[str, int]:
 
 
 def activity_source(memory: Memory, outcome: FieldOutcome) -> str:
+    if outcome.because:
+        return outcome.because
     if outcome.via_model:
         return "model"
     if outcome.asked:
@@ -357,6 +365,9 @@ def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, 
     if field.kind == "file" and resume_path is not None and not resume_names_user(Path(resume_path), memory):
         # Boards parse the upload and overwrite name, email, and phone with what it says. Never send someone else's resume.
         return _outcome(field, "resume", "skip", "", asked=False, from_memory=False)
+    status = _status_outcome(page, field, memory, resume_path, ask, run, snapshot)
+    if status is not None:
+        return status
     if forced:
         entry = memory.get(forced)
         # Demographic surveys are offered to the user even when voluntary.
@@ -436,7 +447,28 @@ def _label_key(field: ExtractedField) -> str:
     return "q." + "_".join(words[:12])
 
 
-def _ask_or_saved(page, field, memory, resume_path, ask, key: str) -> FieldOutcome:
+def _status_outcome(page, field, memory, resume_path, ask, run: FormRun, snapshot) -> FieldOutcome | None:
+    """Status questions are answered from the user's stated facts, whatever the wording. None: not one."""
+    from pocket_agent.forms import status
+
+    if run.answerer is None:
+        return None
+    verdict = run.answerer.answer(field, page=snapshot.fields if snapshot is not None else ())
+    if isinstance(verdict, status.NotStatus):
+        return None
+    if isinstance(verdict, status.Derived):
+        written = _write(page, field, verdict.value, resume_path)
+        if written:
+            return _outcome(field, verdict.key, "fill", written, asked=False, from_memory=True, because=verdict.because)
+        if not field.required:
+            return _outcome(field, verdict.key, "skip", field.value, asked=False, from_memory=False)
+        return _ask_or_saved(page, field, memory, resume_path, ask, _label_key(field))
+    if not field.required:
+        return _outcome(field, verdict.key, "skip", field.value, asked=False, from_memory=False)
+    return _ask_or_saved(page, field, memory, resume_path, ask, _label_key(field), fact=verdict)
+
+
+def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None) -> FieldOutcome:
     entry = memory.get(key)
     if entry and entry.source.startswith("profile_exact:"):
         normalize = lambda text: " ".join(text.replace('*', '').split()).strip().casefold()
@@ -468,6 +500,11 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str) -> FieldOutco
         source="answer",
         label=field.label,
     )
+    if fact is not None and fact.key:
+        # A status answer is also a fact about the user, so it settles every other wording of the question.
+        stated = fact.fact(answer.value)
+        if stated:
+            memory.put(fact.key, stated, always_use=True, sensitive=True, source="answer")
     written = _write(page, field, answer.value, resume_path) if answer.value.strip() else ""
     if not written and field.value and not is_blank(field.value):
         _clear_field(page, field)
@@ -1037,7 +1074,7 @@ def _advance(page, snap: PageSnapshot) -> bool:
     return after == before and "/submitted" not in page.url
 
 
-def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *, asked: bool, from_memory: bool, via_model: bool = False) -> FieldOutcome:
+def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *, asked: bool, from_memory: bool, via_model: bool = False, because: str = "") -> FieldOutcome:
     return FieldOutcome(
         label=field.label,
         section=field.section,
@@ -1048,4 +1085,5 @@ def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *,
         asked=asked,
         from_memory=from_memory,
         via_model=via_model,
+        because=because,
     )

@@ -140,6 +140,9 @@ def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "
     if resume_path:
         _put(memory, "resume", resume_path)
     from pocket_agent.forms.policy import is_sensitive_key
+    # Status facts, not answers: forms.status derives every wording's answer from them.
+    from pocket_agent.forms.status import seed_facts
+    seed_facts(memory, citizenship)
     for key, answer in (profile.get("form_answers") or {}).items():
         if isinstance(answer, str) and not is_sensitive_key(key):
             _put(memory, key, answer)
@@ -149,6 +152,8 @@ def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "
                 label = " ".join(answer["label"].replace('*', '').split()).strip().casefold()
                 source = "profile_exact:" + hashlib.sha256(label.encode()).hexdigest()
             memory.put(key, str(answer["value"]), source=source, sensitive=is_sensitive_key(key), always_use=True, label=answer.get("label"))
+        elif isinstance(answer, dict) and answer.get("value") and str(answer["value"]).strip() and not is_sensitive_key(key):
+            memory.put(key, str(answer["value"]), source="profile", sensitive=False, always_use=False, label=answer.get("label") or None)
 
 
 def _put(memory: Memory, key: str, value: str) -> None:

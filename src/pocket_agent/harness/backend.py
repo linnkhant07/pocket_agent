@@ -37,6 +37,7 @@ class OllamaBackend:
         model: str,
         temperature: float = 0.0,
         max_tokens: int = 400,
+        format: dict | str | None = None,
     ) -> Completion:
         host = self.base_url.rstrip("/")
         if host.endswith("/v1"):
@@ -49,6 +50,8 @@ class OllamaBackend:
             "think": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
+        if format is not None:
+            body["format"] = format
         started = time.perf_counter()
         try:
             with httpx.Client(timeout=self.timeout) as client:

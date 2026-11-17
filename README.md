@@ -82,13 +82,13 @@ uv run pocket-agent fill 'APPLICATION_URL' --model claude --interactive
 
 Environment settings last for the current terminal session. Missing API credentials or a missing model ID produces a configuration error.
 
-### Local browser interface
+### Pocket Agent app
 
 ```bash
-uv run pocket-agent ui
+uv run --env-file .env pocket-agent ui
 ```
 
-The desk opens at `http://127.0.0.1:8765`. Paste a URL, answer questions in the interface, and manage your profile, resume, and saved answers. Select GPT, Claude, or None in Settings. Start the server from the terminal containing your API settings.
+The app opens at `http://127.0.0.1:8000`. Continue with Google once, upload your resume, and answer the remaining questions. Paste an application link and click Fill. A Chromium window on your computer fills the form from your account, and questions it cannot answer appear in the app. The terminal shares the same sign-in. Choose Off, GPT, or Claude for AI drafting next to the Fill button. For GPT or Claude, paste your API key and model ID there. The key is kept in the macOS Keychain. The app needs a Supabase project. [Pocket Agent accounts](docs/MULTI_USER.md) explains the setup.
 
 ### During a run
 
@@ -120,7 +120,7 @@ uv run pocket-agent fill 'APPLICATION_URL' --model none --interactive --resume '
 
 Salary research requires provider-hosted web search support. The log shows the proposed amount, currency, range, and source links. Missing citations, old evidence, unclear context, or unsupported options cause a fallback to your input. A saved salary target avoids this research call.
 
-**The default limit is 3 API requests per CLI fill run**, shared by writing and salary research. The desk applies this limit separately to each Start/Continue operation. Lower it before launching:
+**The default limit is 3 API requests per CLI fill run**, shared by writing and salary research. The app applies this limit separately to each Fill or Continue. Lower it before launching:
 
 ```bash
 export POCKET_AGENT_AI_MAX_CALLS=1
@@ -141,7 +141,7 @@ Illustrative output:
 [AI] Requests attempted: 1; responses received: 1; completed: 1; failed: 0; cached: 1; skipped: 0.
 ```
 
-Logs appear in the terminal or desk. A received response does not mean its answer was accepted or filled. Summary counts measure actual request attempts, not rule matches.
+Logs appear in the terminal or the app. A received response does not mean its answer was accepted or filled. Summary counts measure actual request attempts, not rule matches.
 
 ## Unattended mode
 
@@ -233,3 +233,7 @@ Older local-model chat, evaluation, training, snapshot, and MCP commands remain 
 ## License
 
 [MIT](LICENSE). Hosted model/API usage is billed separately by the provider.
+
+## Accounts
+
+Profiles, resumes, answers, and fill history live in a Supabase account, and the app runs on your own computer. Start it with `pocket-agent ui`. `pocket-agent fill URL --account --model none` runs the same account fill from the terminal with the same sign-in. See [Pocket Agent accounts](docs/MULTI_USER.md) and the [Google setup guide](docs/GOOGLE_SIGN_IN.md). Plain `pocket-agent fill URL` still uses your local files.
