@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
@@ -177,6 +178,56 @@ def test_safe_diagnostic_reaches_browser(client, monkeypatch):
     assert response.status_code == 502
     assert "Authentication logs" in response.json()["detail"] and "secret" not in response.text
     assert client.get("/favicon.ico").status_code == 204
+
+
+def test_restore_session_shows_a_keychain_error_and_stays_quiet_when_signed_out():
+    """A 503 from POST /api/session is a setup failure. A 401 is just signed out."""
+    import json
+    from playwright.sync_api import sync_playwright
+
+    root = Path(__file__).resolve().parents[1] / "src" / "pocket_agent" / "ui" / "static"
+    html = (root / "index.html").read_text(encoding="utf-8").replace('<script defer src="/app.js"></script>', "")
+    html = html.replace("<head>", '<head><base href="http://127.0.0.1:8000/">', 1)
+    script = (root / "app.js").read_text(encoding="utf-8")
+    page_html = html.replace(
+        "</body>",
+        "<script>window.__sessions=[]; const _fetch=window.fetch; window.fetch=async function(url, options){"
+        " const response=await _fetch(url, options);"
+        " if (String(url).includes('/api/session')) window.__sessions.push(response.status);"
+        " return response;};</script><script>" + script + "</script></body>",
+    )
+    keychain = "Account login requires macOS Keychain. Install pocket-agent[accounts]."
+
+    def fulfill(status, detail):
+        def handle(route):
+            if route.request.method == "POST" and route.request.url.endswith("/api/session"):
+                route.fulfill(status=status, content_type="application/json", body=json.dumps({"detail": detail}))
+            else:
+                route.fulfill(status=404, body="", content_type="text/plain")
+        return handle
+
+    def open_page(browser, status, detail):
+        page = browser.new_page()
+        page.route("**/*", fulfill(status, detail))
+        page.set_content(page_html)
+        page.wait_for_function("() => window.__sessions.length > 0")
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        return page
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            broken = open_page(browser, 503, keychain)
+            assert broken.locator("#notice").inner_text() == keychain
+            assert broken.locator("#notice").get_attribute("data-error") == "true"
+            assert broken.locator("#auth").is_visible()
+            assert broken.locator("#workspace").is_hidden()
+            signed_out = open_page(browser, 401, "Sign in to continue.")
+            assert signed_out.locator("#notice").inner_text() == ""
+            assert signed_out.locator("#auth").is_visible()
+            assert signed_out.locator("#workspace").is_hidden()
+        finally:
+            browser.close()
 
 
 def test_pages_do_not_cache_or_expose_tokens(client):

@@ -534,7 +534,20 @@ $('aiForget').addEventListener('click', async () => {
 });
 
 async function restoreSession() {
-  if (await refreshSession()) await finishSignIn({access_token: token});
+  const {response, body} = await request('/api/session', {method:'POST'});
+  token = response.ok && typeof body.access_token === 'string' ? body.access_token : '';
+  if (token) {
+    await finishSignIn({access_token: token});
+    return;
+  }
+  // 401 means this computer is simply signed out. A 503, such as a missing Keychain,
+  // is a setup problem and the server's message has to stay on screen.
+  if (response.status !== 401) {
+    const detail = typeof body.detail === 'string' && body.detail.trim()
+      ? body.detail
+      : 'Pocket Agent could not restore your session (' + response.status + ').';
+    notice(detail, true);
+  }
 }
 (window.location.pathname === '/auth/callback' ? completeGoogleSignIn() : restoreSession())
   .catch(error => notice(error.message, true));

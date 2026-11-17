@@ -9,10 +9,12 @@ The filler uses rules and saved answers first. GPT or Claude can draft written r
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). From the project directory:
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra accounts
 uv run playwright install chromium
 uv run pocket-agent init --no-pull
 ```
+
+Run `uv sync --extra dev --extra accounts`. The `accounts` extra installs macOS Keychain support. The local app and `pocket-agent login` need it to keep a sign-in on this computer. Without it, opening the app shows: Account login requires macOS Keychain. Install pocket-agent[accounts].
 
 `--no-pull` skips the older local-model download. You do not need Ollama or a GGUF file for the current filler. Run initialization once; it writes configuration.
 
