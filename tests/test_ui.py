@@ -233,11 +233,13 @@ def test_replacing_resume_deletes_the_old_pdf_and_failed_save_deletes_the_new_on
 def test_answers_require_known_keys_and_are_always_reused(client):
     assert client.put("/api/account/answers/not_a_key", headers=client.bearer, json={"value": "x"}).status_code == 422
     assert client.put("/api/account/answers/gender", headers=client.bearer, json={"value": "Prefer not to say", "label": "Gender"}).status_code == 200
-    assert client.state.saved_answers[-1] == ("gender", "Prefer not to say", True, "Gender")
+    assert client.state.saved_answers[-1] == ("gender", "decline", True, "Gender")
     assert client.put("/api/account/answers/gender", headers=client.bearer, json={"value": "x", "always_use": False}).status_code == 422
     client.state.answers.append({"key": "learned_key", "value": "old", "label": "Learned"})
     assert client.put("/api/account/answers/learned_key", headers=client.bearer, json={"value": "new"}).status_code == 200
     assert client.delete("/api/account/answers/learned_key", headers=client.bearer).status_code == 200
+    # A cleared learned q.* answer can be typed again even after it leaves the snapshot.
+    assert client.put("/api/account/answers/q.abcdef123456", headers=client.bearer, json={"value": "again", "label": "Explain your answer"}).status_code == 200
 
 
 def test_delete_my_data_requires_sign_in(client):
@@ -282,13 +284,16 @@ def test_desk_fill_asks_inline_syncs_answers_and_records_the_run(monkeypatch, tm
             assert socket.receive_json() == {"type": "error", "message": "No question is waiting."}
             socket.send_json({"type": "start", "url": "https://jobs.example.test/apply", "model": "none"})
             ask = receive_until(socket, "ask")[-1]
+            assert ask.pop("question_id")
             assert ask == {"type": "ask", "key": "referrer_name", "label": "Referrer name", "question": "Who referred you?",
                            "kind": "text", "options": [], "sensitive": False}
 
             socket.send_json({"type": "start", "url": "https://jobs.example.test/other"})
             assert socket.receive_json()["message"].startswith("A fill is already running")
             with client.websocket_connect(WS) as reloaded:
-                assert receive_until(reloaded, "ask")[-1] == ask  # A reloaded tab sees the open question.
+                again = receive_until(reloaded, "ask")[-1]
+                again.pop("question_id")
+                assert again == ask  # A reloaded tab sees the open question.
 
             socket.send_json({"type": "answer", "value": "Sam Rivera"})
             sensitive = receive_until(socket, "ask")[-1]
@@ -299,9 +304,8 @@ def test_desk_fill_asks_inline_syncs_answers_and_records_the_run(monkeypatch, tm
     assert seen[0]["env"] == env_before  # The fill ran without moving POCKET_AGENT_HOME for the server.
     assert seen[0]["resume"] == b"%PDF-" and seen[0]["options"]["navigate"] is True
     assert [r[1:3] for r in client.state.records] == [("https://jobs.example.test/apply", "review")]
-    # Sensitive answers are always remembered, scoped to the question wording by their label.
-    assert sorted(client.state.saved_answers) == [("gender", "Woman", True, "gender"),
-                                                  ("referrer_name", "Sam Rivera", False, "referrer name")]
+    # A sensitive answer is saved only when the ask card's checkbox is on. This client left it off.
+    assert sorted(client.state.saved_answers) == [("referrer_name", "Sam Rivera", False, "referrer name")]
 
 
 def test_desk_rejects_bad_input_and_reports_account_errors_as_done(monkeypatch, tmp_path):

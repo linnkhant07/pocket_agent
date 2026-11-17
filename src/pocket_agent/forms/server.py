@@ -48,7 +48,11 @@ class FormServer:
             def log_message(self, format: str, *args: object) -> None:
                 return
 
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class _DaemonServer(ThreadingHTTPServer):
+            daemon_threads = True
+            block_on_close = False
+
+        self._httpd = _DaemonServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         host, port = self._httpd.server_address[:2]

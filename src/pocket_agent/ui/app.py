@@ -141,6 +141,9 @@ def create_app(*, port: int = 8000, launch=visible_browser) -> FastAPI:
     app = FastAPI(title="Pocket Agent", docs_url=None, redoc_url=None, openapi_url=None)
     app.middleware("http")(security_headers(port))
     app.add_middleware(LocalOnly, port=port)
+    from pocket_agent.account.runner import sweep_old_account_folders
+
+    sweep_old_account_folders()
     desk = Desk(lambda: auth.signed_in_client(sign_in_if_needed=False), launch=launch)
 
     @app.exception_handler(AccountError)
@@ -207,6 +210,7 @@ def create_app(*, port: int = 8000, launch=visible_browser) -> FastAPI:
     @app.post("/api/auth/logout")
     def logout():
         auth.sign_out()
+        desk.cancel()
         return {"ok": True}
 
     # AI keys never go back to the browser; it only learns whether one is saved.
@@ -256,11 +260,21 @@ def create_app(*, port: int = 8000, launch=visible_browser) -> FastAPI:
 
     @app.put("/api/account/answers/{key}")
     def save_answer(key: str, body: AnswerBody, account=Depends(signed_in)):
+        from pocket_agent.forms.facts import FACT_KEYS, canonicalize, is_fact
+        from pocket_agent.forms.policy import SENSITIVE_KEYS
+
         known = {q["key"] for q in questions()}
-        # Answers learned during fills have keys outside the questionnaire; they stay editable too.
-        if key not in known and key not in {a.get("key") for a in account.snapshot()["answers"]}:
+        saved = {a.get("key") for a in account.snapshot()["answers"]}
+        # A deleted q.* answer can be typed again. Arbitrary names stay rejected.
+        learned = bool(re.fullmatch(r"q\.[a-z0-9_]{6,64}", key))
+        if key not in known and key not in saved and key not in SENSITIVE_KEYS and key not in FACT_KEYS and not learned:
             raise HTTPException(422, "Choose a questionnaire question.")
-        account.save_answer(key, body.value, True, body.label)
+        value = body.value
+        if is_fact(key):
+            canon = canonicalize(key, value)
+            if canon:
+                value = canon
+        account.save_answer(key, value, True, body.label)
         return {"ok": True}
 
     @app.delete("/api/account/answers/{key}")
@@ -272,7 +286,14 @@ def create_app(*, port: int = 8000, launch=visible_browser) -> FastAPI:
 
     @app.delete("/api/account")
     def delete_account(account=Depends(signed_in)):
+        from pocket_agent.account.client import AccountError
+
         account.delete_account_data()
+        try:
+            auth.sign_out()
+        except AccountError:
+            pass
+        desk.cancel()
         return {"ok": True}
 
     @app.post("/api/account/resume")

@@ -2,33 +2,71 @@
 
 from __future__ import annotations
 
+import contextvars
 import re
 import hashlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 from pocket_agent.forms.guard import classify_button, progress_is_last
-from pocket_agent.forms.match import indexed_key, match_label, section_of, suggestions
+from pocket_agent.forms.match import indexed_key, match_label, phrase, section_of, suggestions
 from pocket_agent.forms.memory import Memory
 from pocket_agent.forms.policy import ask_key, is_sensitive_key, question_for
 from pocket_agent.forms.reader import ExtractedField, PageSnapshot, extract_page
 from pocket_agent.forms.values import closest_option, date_part, date_variants, equivalent, is_blank, present_value, resolve_option
 
-_INIT = """
-window.__pocketSubmits = 0;
-document.addEventListener("submit", event => { if (event.target.dataset.pocketAccount !== 'true' && event.target.dataset.pocketWizard !== 'true') window.__pocketSubmits += 1; }, true);
-"""
-
-
-_RESUME_INIT = """
-() => {
-  if (window.__pocketSubmits !== undefined) return;
-  window.__pocketSubmits = 0;
-  document.addEventListener("submit", event => { if (event.target.dataset.pocketAccount !== 'true' && event.target.dataset.pocketWizard !== 'true') window.__pocketSubmits += 1; }, true);
+# form.submit() does not fire a submit event, and requestSubmit can run from a listener the
+# guard never sees. Count both, and block them unless this is an account or wizard step.
+_GUARD_JS = r"""
+(() => {
+if (window.__pocketGuard) return;
+window.__pocketGuard = true;
+window.__pocketSubmits = window.__pocketSubmits || 0;
+const pocketCount = (form) => {
+  if (form && form.dataset && form.dataset.pocketAccount === 'true') return false;
+  window.__pocketSubmits += 1;
+  return !(form && form.dataset && form.dataset.pocketWizard === 'true');
+};
+document.addEventListener('submit', (event) => {
+  if (pocketCount(event.target)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+}, true);
+const origSubmit = HTMLFormElement.prototype.submit;
+HTMLFormElement.prototype.submit = function () {
+  if (this.dataset && (this.dataset.pocketAccount === 'true' || this.dataset.pocketWizard === 'true')) {
+    return origSubmit.apply(this, arguments);
+  }
+  window.__pocketSubmits += 1;
+  return undefined;
+};
+const origRequest = HTMLFormElement.prototype.requestSubmit;
+if (origRequest) {
+  HTMLFormElement.prototype.requestSubmit = function () {
+    if (this.dataset && (this.dataset.pocketAccount === 'true' || this.dataset.pocketWizard === 'true')) {
+      return origRequest.apply(this, arguments);
+    }
+    window.__pocketSubmits += 1;
+    return undefined;
+  };
 }
+})();
 """
+
+_INIT = _GUARD_JS
+
+_RESUME_INIT = "() => {\n" + _GUARD_JS + "\n}"
+
+_MAX_PAGES = 24
+_write_key: contextvars.ContextVar[str | None] = contextvars.ContextVar("pocket_write_key", default=None)
+_GENERIC_LABEL = re.compile(
+    r"^(please explain|if yes,? please explain|other|comments|additional comments|explain|please describe)$",
+    re.I,
+)
 
 
 @dataclass
@@ -97,6 +135,7 @@ def fill_form(
     events: EventFn | None = None,
     navigate: bool | None = None,
     preserve_existing: bool = False,
+    stop: Callable[[], bool] | None = None,
 ) -> FormRun:
     """resume=True fills the page already open (after the user signed in by hand) instead of loading url."""
     if navigate is not None:
@@ -104,7 +143,12 @@ def fill_form(
     run = FormRun(url=url)
     from pocket_agent.forms.status import StatusAnswerer
 
-    run.answerer = StatusAnswerer(memory, reader=getattr(llm, "status_reader", None))
+    run.answerer = StatusAnswerer(
+        memory,
+        reader=getattr(llm, "status_reader", None),
+        store_path=Path(memory.path).parent / "readings.sqlite",
+    )
+    stalled = False
     try:
         page.set_default_timeout(8000)
         if not resume:
@@ -114,9 +158,13 @@ def fill_form(
             # The init script already counts submits on pages loaded since the first run; cover a page that predates it.
             page.evaluate(_RESUME_INIT)
         handled: set[tuple[str, str, int]] = set()
+        asks: dict[tuple[str, str, int], int] = {}
         heading = ""
-        for step_index in range(48):
-            snap = _wait_ready(page) if step_index == 0 else extract_page(page)
+        for page_index in range(_MAX_PAGES):
+            if stop and stop():
+                run.error = "Fill cancelled."
+                break
+            snap = _wait_ready(page) if page_index == 0 else extract_page(page)
             if snap.gate:
                 run.gate = snap.gate
                 break
@@ -139,35 +187,63 @@ def fill_form(
                 continue
             if _grow_work(page, memory, snap):
                 continue
-            # _grow_work re-reads the page, which re-stamps every uid. If the page re-rendered meanwhile
-            # (Eightfold adds an address block after Country), the old snapshot's uids point at other controls.
-            snap = extract_page(page)
-            field = _next_field(snap, handled)
-            if field is not None:
+            # Fields on one page share a budget scaled to the field count. The page budget is advances.
+            cap = max(12, len(snap.fields) * 3 + 4)
+            field_steps = 0
+            while field_steps < cap:
+                if stop and stop():
+                    run.error = "Fill cancelled."
+                    break
+                snap = extract_page(page)
+                field = _next_field(snap, handled)
+                if field is None:
+                    break
+                field_steps += 1
                 if field.heading and field.heading != heading:
                     heading = field.heading
                     _emit(events, {"type": "step", "heading": heading})
                 try:
-                    if preserve_existing and not is_blank(field.value) and not _invalid(page, field.uid):
+                    if preserve_existing and not _missing(field) and not _invalid(page, field.uid):
                         outcome = _outcome(field, None, "keep", field.value, asked=False, from_memory=False)
                     else:
                         outcome = _decide_and_write(page, field, memory, resume_path, ask, llm, run, snapshot=snap)
                 except Exception as exc:  # noqa: BLE001 — one stuck widget should not end the whole page
                     outcome = _outcome(field, None, "error", type(exc).__name__, asked=False, from_memory=False)
-                handled.add((field.section, field.label.casefold(), field.group))
+                ident = (field.section, field.label.casefold(), field.group)
+                # An invalid or empty answer is asked again. Three tries, then we stop looping.
+                if _invalid(page, field.uid) and asks.get(ident, 0) < 3:
+                    asks[ident] = asks.get(ident, 0) + 1
+                    try:
+                        _clear_field(page, field)
+                    except Exception:
+                        pass
+                elif outcome.asked and not (outcome.value or "").strip() and asks.get(ident, 0) < 3:
+                    asks[ident] = asks.get(ident, 0) + 1
+                else:
+                    handled.add(ident)
                 run.outcomes.append(outcome)
                 _emit(events, _activity_event(memory, outcome, field.heading))
                 if field.kind == "file" and outcome.action == "error":
                     run.error = "Resume upload did not complete; stopped before advancing."
                     break
-                continue
-            if not _advance(page, snap):
-                from pocket_agent.forms.workday import account_scope
-                if account_scope(page.url) and snap.progress and not progress_is_last(snap.progress) and not re.search(r"\breview\b", snap.progress, re.I):
-                    missing = [field.label for field in snap.fields if field.required and is_blank(field.value)]
-                    run.error = "Workday did not advance from the current step" + (": " + ", ".join(missing) if missing else "; check validation or navigation errors")
+            if run.error:
                 break
+            if _next_field(extract_page(page), handled) is not None:
+                run.error = "Stopped after reaching the action limit; application is incomplete."
+                break
+            advanced = _advance(page, extract_page(page))
+            if not advanced.moved:
+                from pocket_agent.forms.workday import account_scope
+                snap = extract_page(page)
+                if account_scope(page.url) and snap.progress and not progress_is_last(snap.progress) and not re.search(r"\breview\b", snap.progress, re.I):
+                    missing = [item.label for item in snap.fields if item.required and _missing(item)]
+                    run.error = "Workday did not advance from the current step" + (": " + ", ".join(missing) if missing else "; check validation or navigation errors")
+                elif advanced.stalled:
+                    stalled = True
+                break
+            # A page that did not change keeps handled answers. Only a real advance starts over.
             handled.clear()
+            asks.clear()
             from pocket_agent.forms.workday import account_scope
             if account_scope(page.url):
                 _wait_ready(page)
@@ -175,16 +251,18 @@ def fill_form(
             run.error = "Stopped after reaching the action limit; application is incomplete."
         final_snapshot = extract_page(page)
         run.current_step = final_snapshot.progress
-        run.unresolved = [item.label for item in final_snapshot.fields if item.required and is_blank(item.value)]
+        run.unresolved = [item.label for item in final_snapshot.fields if item.required and _missing(item)]
         run.validation_errors = page.locator('input:invalid, select:invalid, textarea:invalid, [aria-invalid=true]').evaluate_all(
             "els => els.filter(el => el.getClientRects().length).map(el => el.validationMessage || el.getAttribute('aria-label') || 'Invalid field')"
         )
-        review_visible = bool(re.search(r"\breview\b", final_snapshot.progress, re.I))
-        blocked = bool(run.gate or run.error or run.unresolved or run.validation_errors)
-        run.status = "blocked" if blocked else "review" if review_visible else "stopped"
         run.submits = int(page.evaluate("() => window.__pocketSubmits || 0") or 0)
         if "/submitted" in page.url:
             run.submits = max(run.submits, 1)
+        if run.submits:
+            run.error = run.error or "A submit was attempted while filling. Stopped. Nothing was left submitted for you."
+        review_visible = bool(re.search(r"\breview\b", final_snapshot.progress or "", re.I)) or _ready_for_review(final_snapshot)
+        blocked = bool(run.gate or run.error or run.unresolved or run.validation_errors or stalled or run.submits)
+        run.status = "blocked" if blocked else "review" if review_visible else "stopped"
     except Exception as exc:  # noqa: BLE001 — the eval harness records crashes per form
         run.error = f"{type(exc).__name__}: {exc}"
     counts = review_counts(run.outcomes)
@@ -192,10 +270,31 @@ def fill_form(
         _emit(events, {"type": "gate", "gate": run.gate, **counts, "submits": run.submits})
     elif run.error:
         _emit(events, {"type": "error", "message": run.error})
-    else:
+    elif run.status == "review":
         _emit(events, {"type": "review", **counts, "submits": run.submits})
-    run.answerer.close()
+    if run.answerer is not None:
+        run.answerer.close()
     return run
+
+
+def _missing(field: ExtractedField) -> bool:
+    """A required unchecked checkbox reads as 'No', which is still blank."""
+    if field.kind in {"checkbox", "multicheck"}:
+        return field.value.strip().casefold() not in {"yes"} and not (
+            field.kind == "multicheck" and field.value.strip()
+        )
+    return is_blank(field.value)
+
+
+def _ready_for_review(snap: PageSnapshot) -> bool:
+    """A page whose only way forward is Submit, with nothing left blank, is ready for the user."""
+    if any(item.required and _missing(item) for item in snap.fields):
+        return False
+    kinds = [
+        classify_button(button.text, button_type=button.button_type, onclick=button.onclick, heading=button.heading)
+        for button in snap.buttons
+    ]
+    return "submit" in kinds and "forward" not in kinds and not snap.progress
 
 
 def review_counts(outcomes: list[FieldOutcome]) -> dict[str, int]:
@@ -357,8 +456,25 @@ def _name_confirmation(page, field: ExtractedField, memory: Memory, snapshot: Pa
     return None
 
 
+def _option_labels(field: ExtractedField) -> list[str]:
+    return [option["label"] for option in field.options if option.get("label")]
+
+
+def _may_reuse(entry, key: str | None, field: ExtractedField, memory: Memory) -> bool:
+    """Profile and resume facts fill directly. A typed answer is reused with consent, or for the same wording."""
+    if entry is None or not str(entry.value).strip():
+        return False
+    if entry.always_use or entry.source != "answer":
+        return True
+    if entry.sensitive or is_sensitive_key(key) or _generic_label(field.label):
+        return False
+    # The same canonical key is the same fact. Generic prompts are excluded above, so they stay per page.
+    return True
+
+
 def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, ask: AskFn, llm, run: FormRun, *, snapshot: PageSnapshot | None = None) -> FieldOutcome:
-    forced = ask_key(field.label, field.section)
+    labels = _option_labels(field)
+    forced = ask_key(field.label, field.section, labels)
     if field.kind == "file" and forced == "cover_letter":
         # The only file we have is the resume. It does not go in a cover letter slot.
         return _outcome(field, forced, "skip", "", asked=False, from_memory=False)
@@ -386,24 +502,37 @@ def _decide_and_write(page, field: ExtractedField, memory: Memory, resume_path, 
         if written:
             return _outcome(field, "full_name_confirmation", "fill", written, asked=False, from_memory=True)
     learned = memory.learned_labels()
-    match = match_label(field.label, section=field.section, learned=learned)
+    match = match_label(field.label, section=field.section, learned=learned, options=labels)
     base = match.key if match and match.score >= 0.93 and not is_sensitive_key(match.key) else None
     key = indexed_key(base, field.group) if base else None
-    value = stored_value(memory, key, field.label) if key else ""
+    entry = memory.get(key) if key else None
+    value = stored_value(memory, key, field.label) if key and _may_reuse(entry, key, field, memory) else ""
+    if _generic_label(field.label) and not (entry and entry.always_use):
+        value = ""
     ruled = bool(key and value.strip() and match and match.reason in {"exact", "tokens", "subset", "learned"})
     if ruled:
-        written = _write(page, field, value, resume_path)
-        if written:
+        written = _write_for(page, field, value, resume_path, key)
+        if written and not (page is not None and _invalid(page, getattr(field, "uid", ""))):
             return _outcome(field, key, "fill", written, asked=False, from_memory=True)
+        if written:
+            try:
+                _clear_field(page, field)
+            except Exception:
+                pass
         if field.required:
-            return _ask_or_saved(page, field, memory, resume_path, ask, key or _label_key(field))
-    if field.required and field.value and not is_blank(field.value):
+            return _ask_or_saved(page, field, memory, resume_path, ask, key or _label_key(field, page.url))
+    mapped = _map_with_model(page, field, memory, resume_path, llm, run)
+    if mapped is not None:
+        return mapped
+    if field.required and page is not None and _invalid(page, getattr(field, "uid", "")):
+        return _ask_or_saved(page, field, memory, resume_path, ask, key or _label_key(field, page.url))
+    if field.required and not _missing(field):
         return _outcome(field, key, "keep", field.value, asked=False, from_memory=False)
     if field.required:
         generated = _generate_and_write(page, field, resume_path, llm, run)
         if generated:
             return generated
-        return _ask_or_saved(page, field, memory, resume_path, ask, key or _label_key(field))
+        return _ask_or_saved(page, field, memory, resume_path, ask, key or _label_key(field, page.url))
     # Unknown optional fields may already contain resume-parsed or user-entered
     # values. Leaving them alone is safer than erasing them.
     return _outcome(field, key, "skip", field.value, asked=False, from_memory=False)
@@ -413,18 +542,35 @@ def _generate_and_write(page, field, resume_path, llm, run):
     if llm is None or not hasattr(llm, "generate") or field.kind == "file":
         return None
     started = time.perf_counter()
+    generator = None
+    before = 0
     try:
         generator = getattr(llm, "salary", None) if ask_key(field.label, field.section) == "salary_expectation" else llm
         if generator is None:
             return None
         if run.ai_context is None:
-            # Stable job context: changing input values must not invalidate response caches.
+            # Job context is an allowlist of experience, projects, and skills. Contact details,
+            # demographic answers, and rendered select values stay on the page.
             text = page.locator("body").evaluate(r"""body => {
                 const clone = body.cloneNode(true);
-                clone.querySelectorAll('script, style, input, textarea, select, [role=combobox], [role=listbox]').forEach(el => el.remove());
-                return clone.textContent.replace(/\s+/g, ' ').trim();
+                clone.querySelectorAll('script, style, input, textarea, select, option, [role=combobox], [role=listbox], [class*=single-value], [class*=multi-value]').forEach(el => el.remove());
+                const drop = /equal employment|self-identif|demographic|voluntary|eeo|contact information|my information|^contact$/i;
+                clone.querySelectorAll('h1,h2,h3,h4').forEach(el => {
+                  if (!drop.test(el.innerText || '')) return;
+                  let sib = el.nextElementSibling;
+                  el.remove();
+                  while (sib && !/^H[1-4]$/.test(sib.tagName)) {
+                    const next = sib.nextElementSibling;
+                    sib.remove();
+                    sib = next;
+                  }
+                });
+                return (clone.textContent || '').replace(/\s+/g, ' ').trim();
             }""")
-            run.ai_context = page.url + "\n" + text[:7800]
+            text = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", " ", text)
+            text = re.sub(r"\+?\d[\d\s().-]{7,}\d", " ", text)
+            run.ai_context = page.url + "\n" + re.sub(r"\s+", " ", text).strip()[:7800]
+        before = _attempted(generator)
         answer = generator.generate(label=field.label, kind=field.kind,
             options=[option["label"] for option in field.options if option.get("label")],
             job_context=run.ai_context)
@@ -436,15 +582,33 @@ def _generate_and_write(page, field, resume_path, llm, run):
     except Exception:
         pass
     finally:
-        run.model_calls += 1
+        if generator is not None and _attempted(generator) > before:
+            run.model_calls += 1
         run.model_seconds += time.perf_counter() - started
     return None
 
 
-def _label_key(field: ExtractedField) -> str:
-    """A question no rule knows is saved under its own wording, so one answer never fills another question."""
-    words = re.sub(r"[^a-z0-9]+", " ", field.label.casefold()).split()
-    return "q." + "_".join(words[:12])
+def _attempted(generator) -> int:
+    backend = getattr(generator, "backend", None)
+    if backend is None:
+        return 0
+    return int(getattr(backend, "attempted", 0) or 0) + int(getattr(backend, "status_attempted", 0) or 0)
+
+
+def _generic_label(label: str) -> bool:
+    flat = " ".join(re.sub(r"[^a-z0-9]+", " ", (label or "").casefold()).split())
+    if _GENERIC_LABEL.match(flat):
+        return True
+    return bool(re.search(r"\bif yes\b", flat)) and bool(re.search(r"\b(explain|describe|comment)\b", flat))
+
+
+def _label_key(field: ExtractedField, url: str = "") -> str:
+    """Hash the full label. Generic prompts also include the page, so they do not cross employers."""
+    full = " ".join(re.sub(r"[^a-z0-9]+", " ", field.label.casefold()).split())
+    if _generic_label(field.label):
+        parsed = urlsplit(url or "")
+        full = f"{parsed.netloc}{parsed.path}\n{full}"
+    return "q." + hashlib.sha256(full.encode()).hexdigest()[:20]
 
 
 def _status_outcome(page, field, memory, resume_path, ask, run: FormRun, snapshot) -> FieldOutcome | None:
@@ -475,11 +639,16 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None)
         fingerprint = hashlib.sha256(normalize(field.label).encode()).hexdigest()
         if entry.source != "profile_exact:" + fingerprint:
             entry = None
-    sensitive = is_sensitive_key(key) or ask_key(field.label, field.section) == key
-    if entry and entry.always_use and entry.value.strip():
-        written = _write(page, field, entry.value, resume_path)
-        if written:
+    sensitive = is_sensitive_key(key) or ask_key(field.label, field.section, _option_labels(field)) == key
+    if entry and entry.always_use and entry.value.strip() and not (_generic_label(field.label) and entry.source == "answer"):
+        written = _write_for(page, field, entry.value, resume_path, key)
+        if written and not (page is not None and _invalid(page, getattr(field, "uid", ""))):
             return _outcome(field, key, "fill", written, asked=False, from_memory=True)
+        if written:
+            try:
+                _clear_field(page, field)
+            except Exception:
+                pass
     question = question_for(field.label)
     if field.kind == "dropdown":
         offered = _peek_dropdown(page, field)
@@ -492,9 +661,10 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None)
     ))
     if answer.skip:
         return _outcome(field, key, "skip", "", asked=False, from_memory=False)
+    stored = _canonical_answer(key, answer.value, memory.get(key))
     memory.put(
         key,
-        answer.value,
+        stored,
         always_use=answer.always_use,
         sensitive=sensitive,
         source="answer",
@@ -505,7 +675,7 @@ def _ask_or_saved(page, field, memory, resume_path, ask, key: str, *, fact=None)
         stated = fact.fact(answer.value)
         if stated:
             memory.put(fact.key, stated, always_use=True, sensitive=True, source="answer")
-    written = _write(page, field, answer.value, resume_path) if answer.value.strip() else ""
+    written = _write_for(page, field, stored, resume_path, key) if stored.strip() else ""
     if not written and field.value and not is_blank(field.value):
         _clear_field(page, field)
     return _outcome(field, key, "ask", written, asked=True, from_memory=False)
@@ -573,8 +743,84 @@ def _llm_fill(field: ExtractedField, memory: Memory, llm) -> str | None:
     return choice.key
 
 
+def _canonical_answer(key: str, value: str, existing) -> str:
+    """Store a fact as its canonical value. Never replace one with another form's option wording."""
+    from pocket_agent.forms import facts
+
+    if not facts.is_fact(key):
+        return value
+    canon = facts.canonicalize(key, value)
+    if canon:
+        return canon
+    if existing is not None and facts.canonicalize(key, existing.value):
+        return existing.value
+    return value
+
+
+def _map_with_model(page, field, memory, resume_path, llm, run: FormRun):
+    """Last resort before asking: map the question without sending the user's answers."""
+    if llm is None or not hasattr(llm, "map_facts") or field.kind == "file":
+        return None
+    from pocket_agent.forms import facts
+
+    catalog = facts.public_catalog(memory)
+    if not catalog:
+        return None
+    labels = _option_labels(field)
+    before = _attempted(llm)
+    try:
+        raw = llm.map_facts(label=field.label, options=labels, catalog=catalog)
+    except Exception:
+        return None
+    finally:
+        if _attempted(llm) > before:
+            run.model_calls += 1
+    applied = facts.apply_mapping(raw, options=labels, catalog=catalog, memory=memory)
+    if applied is None:
+        return None
+    key, option = applied
+    written = _write_for(page, field, option, resume_path, key)
+    if not written:
+        return None
+    return _outcome(field, key, "fill", written, asked=False, from_memory=True, via_model=True)
+
+
+def _retarget(page, field: ExtractedField) -> ExtractedField:
+    """The page may have gained controls while we waited for an answer. Write to the field with this label."""
+    snap = extract_page(page)
+    matches = [
+        candidate for candidate in snap.fields
+        if candidate.label.casefold() == field.label.casefold()
+        and candidate.kind == field.kind
+        and candidate.group == field.group
+    ]
+    return matches[0] if len(matches) == 1 else field
+
+
+def _write_for(page, field: ExtractedField, raw: str, resume_path: Path | None, key: str | None) -> str:
+    token = _write_key.set(key)
+    try:
+        return _write(page, field, raw, resume_path)
+    finally:
+        _write_key.reset(token)
+
+
 def _write(page, field: ExtractedField, raw: str, resume_path: Path | None) -> str:
+    field = _retarget(page, field)
     options = [option["label"] for option in field.options]
+    from pocket_agent.forms import facts
+
+    key = _write_key.get()
+    if facts.is_fact(key):
+        rendered = facts.render(
+            key, raw, kind=field.kind, options=options, question=field.label, input_type=field.input_type,
+        )
+        if rendered == "":
+            return ""
+        if rendered is not None:
+            raw = rendered
+    if field.kind == "multicheck":
+        return _apply_multicheck(page, field, raw, key)
     if field.kind == "workday_prompt":
         root = page.locator(f'[data-pocket-uid="{field.uid}"]')
         if equivalent(_read_back(page, field), raw):
@@ -885,7 +1131,28 @@ def _pick_dropdown(page, field: ExtractedField, raw: str) -> str:
     return ""
 
 
+def _apply_multicheck(page, field: ExtractedField, raw: str, key: str | None) -> str:
+    from pocket_agent.forms import facts
+
+    wanted = set(facts.race_values(raw) if key == "race" else [part.strip() for part in raw.split(",") if part.strip()])
+    chosen: list[str] = []
+    for option in field.options:
+        meaning = facts.option_meaning(key or "", option["label"], field.label) if key else None
+        label = option["label"]
+        take = (meaning in wanted) or (label in wanted) or (facts.canonicalize(key, label) in wanted if key else False)
+        if meaning and meaning.startswith("asian:") and "asian" in wanted and not any(item.startswith("asian:") for item in wanted):
+            take = False
+        if option.get("uid"):
+            page.locator(f'[data-pocket-uid="{option["uid"]}"]').set_checked(bool(take))
+        if take:
+            chosen.append(label)
+    return ", ".join(chosen)
+
+
 def _apply(page, field: ExtractedField, value: str) -> None:
+    if value.casefold() in {"immediately", "immediate", "asap", "now"} and (field.kind == "date" or field.input_type == "date"):
+        from pocket_agent.paths import today
+        value = today().isoformat()
     root = page.locator(f'[data-pocket-uid="{field.uid}"]')
     if field.kind == "checkbox":
         root.set_checked(value.casefold() in {"yes", "true"})
@@ -992,6 +1259,7 @@ def _invalid(page, uid: str) -> bool:
           const el = document.querySelector(`[data-pocket-uid="${uid}"]`);
           if (!el) return false;
           if (el.getAttribute("aria-invalid") === "true") return true;
+          if (el.willValidate && typeof el.checkValidity === "function" && !el.checkValidity()) return true;
           const box = el.parentElement;
           return !!(box && box.querySelector("[role=alert]"));
         }""",
@@ -999,9 +1267,34 @@ def _invalid(page, uid: str) -> bool:
     ))
 
 
-def _advance(page, snap: PageSnapshot) -> bool:
+class _AdvanceResult:
+    def __init__(self, moved: bool, stalled: bool = False) -> None:
+        self.moved = moved
+        self.stalled = stalled
+
+    def __bool__(self) -> bool:
+        return self.moved
+
+
+def _page_signature(page) -> str:
+    return page.evaluate(
+        """() => {
+          const bar = document.querySelector('[data-automation-id=progressBarActiveStep], #progress');
+          const progress = bar ? (bar.innerText || '') : '';
+          const fields = [...document.querySelectorAll('input, textarea, select')].filter(el => el.getClientRects().length)
+            .map(el => [el.name, el.id, el.getAttribute('aria-label'), el.type].join('|')).join('\\n');
+          return location.href + '\\n' + progress + '\\n' + fields;
+        }"""
+    )
+
+
+def _submits(page) -> int:
+    return int(page.evaluate("() => window.__pocketSubmits || 0") or 0)
+
+
+def _advance(page, snap: PageSnapshot) -> _AdvanceResult:
     if progress_is_last(snap.progress):
-        return False
+        return _AdvanceResult(False)
     forwards = []
     for button in snap.buttons:
         # Workday's wizard navigation is type=submit on intermediate pages too.
@@ -1020,19 +1313,20 @@ def _advance(page, snap: PageSnapshot) -> bool:
             attached = not upload_step or any(field.kind == "file" and field.value == "uploaded" for field in snap.fields) or bool(
                 re.search(r"\S+\.pdf\b", page.locator("body").inner_text(), re.I)
             )
-            if any(field.required and is_blank(field.value) for field in snap.fields):
-                return False
+            if any(field.required and _missing(field) for field in snap.fields):
+                return _AdvanceResult(False)
             if page.locator('input:invalid, select:invalid, textarea:invalid, [aria-invalid=true]').count():
-                return False
+                return _AdvanceResult(False)
             if attached and target.is_enabled():
                 if target.get_attribute("aria-hidden") == "true":
                     overlay = page.locator('[data-automation-id="click_filter"]').and_(
                         page.get_by_role("button", name=button.text, exact=True)
                     )
                     if overlay.count() != 1 or not overlay.is_visible():
-                        return False
+                        return _AdvanceResult(False)
                     target = overlay
                 target.evaluate("el => {const form = el.closest('form'); if (form) form.dataset.pocketWizard='true';}")
+                counted = _submits(page)
                 try:
                     target.click(timeout=8000)
                     if upload_step:
@@ -1050,9 +1344,16 @@ def _advance(page, snap: PageSnapshot) -> bool:
                                 return el.getClientRects().length && heading && (heading===title || title.startsWith(heading+' '));
                             });
                         }""", arg=snap.progress, timeout=30000)
-                    return True
+                    later = _submits(page)
+                    landed = page.url
+                    heading = page.locator("h1, h2").first.inner_text() if page.locator("h1, h2").count() else ""
+                    submitted = "/submitted" in landed or bool(re.search(r"\b(review|confirm)\b", heading, re.I))
+                    if later > counted and not submitted:
+                        # The verified Next control moved the wizard. That navigation submit is not an application submit.
+                        page.evaluate("(n) => { window.__pocketSubmits = Math.max(0, (window.__pocketSubmits || 0) - n); }", later - counted)
+                    return _AdvanceResult(moved=not submitted and later >= counted)
                 except Exception:
-                    return False
+                    return _AdvanceResult(False)
                 finally:
                     page.locator('form[data-pocket-wizard]').evaluate_all("forms=>forms.forEach(form=>delete form.dataset.pocketWizard)")
             continue
@@ -1066,12 +1367,57 @@ def _advance(page, snap: PageSnapshot) -> bool:
         if kind == "forward" and not button.in_dialog:
             forwards.append(button)
     if not forwards:
-        return False
-    before = int(page.evaluate("() => window.__pocketSubmits || 0") or 0)
-    page.locator(f'[data-pocket-uid="{forwards[0].uid}"]').click()
-    page.wait_for_timeout(80)
-    after = int(page.evaluate("() => window.__pocketSubmits || 0") or 0)
-    return after == before and "/submitted" not in page.url
+        return _AdvanceResult(False)
+    before = _submits(page)
+    before_url = page.url
+    before_sig = _page_signature(page)
+    blocked = {"n": 0}
+
+    def _block_post(route) -> None:
+        try:
+            if route.request.method.upper() == "GET":
+                try:
+                    route.fallback()
+                except Exception:
+                    route.continue_()
+                return
+        except Exception:
+            return
+        blocked["n"] += 1
+        try:
+            route.abort()
+        except Exception:
+            pass
+
+    page.route("**/*", _block_post)
+    try:
+        page.locator(f'[data-pocket-uid="{forwards[0].uid}"]').click(timeout=8000)
+        deadline = time.monotonic() + 2.5
+        moved = False
+        while time.monotonic() < deadline:
+            if page.url != before_url or _page_signature(page) != before_sig:
+                moved = True
+                break
+            page.wait_for_timeout(100)
+    except Exception:
+        try:
+            moved = page.url != before_url or _page_signature(page) != before_sig
+        except Exception:
+            moved = False
+    finally:
+        try:
+            page.unroute("**/*", _block_post)
+        except Exception:
+            pass
+    if blocked["n"]:
+        page.evaluate("(n) => { window.__pocketSubmits = (window.__pocketSubmits || 0) + n; }", blocked["n"])
+    after = _submits(page)
+    if after > before or blocked["n"] or "/submitted" in page.url:
+        return _AdvanceResult(False)
+    if moved:
+        return _AdvanceResult(True)
+    # The click landed and the page did not change. Do not click it again.
+    return _AdvanceResult(False, stalled=True)
 
 
 def _outcome(field: ExtractedField, key: str | None, action: str, value: str, *, asked: bool, from_memory: bool, via_model: bool = False, because: str = "") -> FieldOutcome:

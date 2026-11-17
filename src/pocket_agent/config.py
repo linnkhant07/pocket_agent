@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +33,17 @@ def load_config(home: Path | None = None) -> dict[str, Any]:
     return data
 
 
+_CONFIG_LOCK = threading.Lock()
+
+
 def save_config(data: dict[str, Any], home: Path | None = None) -> Path:
     path = config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    text = yaml.safe_dump(data, sort_keys=False)
+    with _CONFIG_LOCK:
+        path.write_text(text, encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
     return path

@@ -43,4 +43,4 @@ packages = ["src/pocket_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Do not put -q here. `pytest -q` is already quiet, and a second -q hides the final pass/fail line.

@@ -92,8 +92,9 @@ def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "
     _put(memory, "region", str(location.get("region") or ""))
     _put(memory, "country", str(location.get("country") or ""))
     _put(memory, "location", ", ".join(str(part) for part in (location.get("city"), location.get("region")) if part))
-    _put(memory, "willing_to_relocate", "Yes" if location.get("willing_to_relocate") else "No")
-    _put(memory, "remote_ok", "Yes" if location.get("remote_ok") else "No")
+    # A missing boolean is unknown. None must not become "No".
+    _put_bool(memory, "willing_to_relocate", location.get("willing_to_relocate"))
+    _put_bool(memory, "remote_ok", location.get("remote_ok"))
     education = (profile.get("education") or [{}])[0]
     _put(memory, "school", str(education.get("school") or ""))
     _put(memory, "degree", str(education.get("degree") or ""))
@@ -111,21 +112,28 @@ def seed_memory(memory: Memory, profile: dict[str, Any], *, resume_path: str = "
         highlights = job.get("highlights") or []
         _put(memory, f"work.{index}.description", " ".join(str(item) for item in highlights))
     citizenship = profile.get("citizenship") or {}
-    places = citizenship.get("authorized_to_work") or []
-    _put(memory, "work_authorization", "Yes" if "US" in places else "No")
+    places = citizenship.get("authorized_to_work")
+    if isinstance(places, list) and places:
+        _put(memory, "work_authorization", "Yes" if "US" in places else "No")
     residence = str(location.get("country") or "").casefold()
-    _put(memory, "located_in_us", "Yes" if residence in {"us", "usa", "united states", "united states of america"} else "No")
+    if residence:
+        _put(memory, "located_in_us", "Yes" if residence in {"us", "usa", "united states", "united states of america"} else "No")
     status = "Citizen" if str(citizenship.get("country") or "").upper() == "US" else "Permanent Resident" if "US" in (citizenship.get("permanent_residence") or []) else ""
     _put(memory, "auth_status", status)
     degree = str(education.get("degree") or "")
-    _put(memory, "has_bachelors", "Yes" if degree.upper() in {"BS", "BA", "BSC", "BACHELOR", "BACHELOR'S"} or "bachelor" in degree.casefold() else "No")
+    if degree.strip():
+        _put(memory, "has_bachelors", "Yes" if degree.upper() in {"BS", "BA", "BSC", "BACHELOR", "BACHELOR'S"} or "bachelor" in degree.casefold() else "No")
     jobs = list(profile.get("experience") or [])
     if jobs:
         latest = max(jobs, key=lambda job: str(job.get("end") or ""))
         _put(memory, "most_recent_employer", str(latest.get("org") or ""))
-    _put(memory, "requires_sponsorship", "Yes" if citizenship.get("requires_sponsorship") else "No")
-    clearance = str(citizenship.get("clearance") or "none")
-    _put(memory, "clearance", "No" if clearance.casefold() in {"none", "no", ""} else clearance)
+    _put_bool(memory, "requires_sponsorship", citizenship.get("requires_sponsorship"))
+    if "clearance" in citizenship and str(citizenship.get("clearance") or "").strip():
+        clearance = str(citizenship.get("clearance"))
+        _put(memory, "clearance", "No" if clearance.casefold() in {"none", "no"} else clearance)
+    preferences = profile.get("preferences") or {}
+    if preferences.get("target_start") and memory.get("available_start") is None:
+        _put(memory, "available_start", str(preferences["target_start"]))
     skills = profile.get("skills") or {}
     flat: list[str] = []
     if isinstance(skills, dict):
@@ -160,3 +168,11 @@ def _put(memory: Memory, key: str, value: str) -> None:
     if not value.strip():
         return
     memory.put(key, value, source="resume", sensitive=False, always_use=False)
+
+
+def _put_bool(memory: Memory, key: str, value: object) -> None:
+    """Seed Yes/No only from a real boolean. None and missing stay unset so the user is asked."""
+    if value is True:
+        _put(memory, key, "Yes")
+    elif value is False:
+        _put(memory, key, "No")

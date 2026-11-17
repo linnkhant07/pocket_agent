@@ -46,13 +46,11 @@ def validate_profile(data: dict[str, Any]) -> dict[str, Any]:
     citizenship = data.setdefault("citizenship", {})
     if not isinstance(citizenship, dict):
         raise ProfileError("citizenship must be a mapping")
-    citizenship.setdefault("clearance", "none")
-    citizenship.setdefault("requires_sponsorship", False)
+    # Eligibility booleans stay unset when the profile does not state them.
+    # Inventing False/True here made the filler answer "No" or "Yes" without asking.
     location = data.setdefault("location", {})
     if not isinstance(location, dict):
         raise ProfileError("location must be a mapping")
-    location.setdefault("willing_to_relocate", False)
-    location.setdefault("remote_ok", True)
     data.setdefault("canary", CANARY)
     return data
 

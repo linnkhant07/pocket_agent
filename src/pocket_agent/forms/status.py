@@ -13,6 +13,7 @@ Unknown facts and history ("have you held H-1B status") are never guessed: they 
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import re
 import sqlite3
@@ -536,6 +537,10 @@ class _ReadingStore:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, check_same_thread=False)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         self._db.execute("CREATE TABLE IF NOT EXISTS readings (fingerprint TEXT PRIMARY KEY, reading TEXT, source TEXT)")
         self._db.commit()
 

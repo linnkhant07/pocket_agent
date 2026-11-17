@@ -109,8 +109,11 @@ def extract_resume(content: bytes, *, backend=None, model: str | None = None) ->
         try:
             parsed = parse_resume(path)
             text = parsed.get("text", "")
-            if not text.strip():
-                raise ValueError("No readable text found. Upload a text-based PDF rather than a scanned image.")
+        except Exception:
+            raise ValueError("Could not read this resume. Upload an unencrypted PDF containing selectable text.") from None
+        if not text.strip():
+            raise ValueError("No readable text found. Upload a text-based PDF rather than a scanned image.")
+        try:
             contacts = resume_contact_profile({}, path)
         except ValueError as exc:
             if "multiple email" in str(exc):

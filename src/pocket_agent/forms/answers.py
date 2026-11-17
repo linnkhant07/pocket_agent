@@ -41,8 +41,13 @@ class AnsweringDecider:
         self.model = model
         self.backend = backend or OllamaBackend('http://127.0.0.1:11434', timeout=60)
         # Only applicant facts are evidence. A job posting is untrusted context, not applicant facts.
-        allowed = {key: profile[key] for key in ('name', 'email', 'phone', 'personal', 'location', 'education', 'experience', 'projects', 'skills', 'links') if key in profile}
-        allowed["form_answers"] = {key: value for key, value in (profile.get("form_answers") or {}).items() if not is_sensitive_key(key)}
+        # Contact details and demographics never go to a model. Experience, projects, and skills do.
+        allowed = {key: profile[key] for key in ('experience', 'projects', 'skills') if key in profile}
+        private = re.compile(r"email|phone|address|birth|ssn|gender|race|ethnic|veteran|disab|salary|visa|sexual|pronoun|hispanic|orient", re.I)
+        allowed["form_answers"] = {
+            key: value for key, value in (profile.get("form_answers") or {}).items()
+            if not is_sensitive_key(key) and not private.search(key)
+        }
         self.facts = flatten(allowed)
         self.resume_text = resume_text[:16000]
         self.facts.update({f"resume.lines.{index}": line.strip() for index, line in enumerate(self.resume_text.splitlines()) if len(line.strip()) >= 20})
@@ -54,6 +59,16 @@ class AnsweringDecider:
 
     def choose(self, **kwargs):
         return self.matcher.choose(**kwargs) if self.matcher is not None and self.matcher.available else None
+
+    def map_facts(self, *, label: str, options: list[str], catalog: list[dict]):
+        """Map a question to a known fact. The catalog has keys and allowed values, never the user's answers."""
+        if not self.model or self.model == "none" or self.backend is None:
+            return None
+        from pocket_agent.forms.facts import mapping_messages
+
+        messages = mapping_messages(label, options, catalog)
+        completion = self.backend.complete(messages, model=self.model, temperature=0, max_tokens=300)
+        return completion.text
 
     def generate(self, *, label: str, kind: str, options: list[str], job_context: str) -> Answer | None:
         forced = ask_key(label)

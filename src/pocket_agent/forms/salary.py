@@ -56,6 +56,19 @@ Only annual base pay is supported. For hourly/monthly questions return ask. Do n
             return None
         if not re.fullmatch(r'[A-Z]{3}', data['currency']):
             return None
+        location = data['location'].casefold()
+        for names, code in (
+            (("london", "united kingdom", "england", " uk"), "GBP"),
+            (("canada", "toronto", "vancouver"), "CAD"),
+            (("germany", "berlin", "france", "paris"), "EUR"),
+            (("india", "bangalore", "bengaluru", "mumbai"), "INR"),
+            (("australia", "sydney", "melbourne"), "AUD"),
+        ):
+            if any(name in location for name in names) and data['currency'] != code:
+                return None
+        named = set(re.findall(r"\b(USD|EUR|GBP|CAD|INR|AUD)\b", " ".join(options or [])))
+        if named and data['currency'] not in named:
+            return None
         low, high = data.get('low'), data.get('high')
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) for value in (low, high)):
             return None

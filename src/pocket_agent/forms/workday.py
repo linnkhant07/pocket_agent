@@ -220,11 +220,12 @@ class WorkdayAccounts:
                 "special character" in body and password.isalnum()
             ):
                 return AccountStep(message="The configured password does not meet this Workday page's uppercase/special-character requirements. Set POCKET_AGENT_ACCOUNT_PASSWORD to a matching password.")
-        try:
-            # Save generated credentials BEFORE creating the account, including when verification is required.
-            self.credentials.put(self.scope, self.email, password, pending=creating)
-        except Exception:
-            return AccountStep(message="Could not save credentials in macOS Keychain; no account was created or password entered.")
+        if creating:
+            try:
+                # Save generated credentials BEFORE creating the account, including when verification is required.
+                self.credentials.put(self.scope, self.email, password, pending=True)
+            except Exception:
+                return AccountStep(message="Could not save credentials in macOS Keychain; no account was created or password entered.")
         self.attempts.add(key)
         self.stage = "entering account credentials"
         self._type_credential(emails[0], self.email)
@@ -247,6 +248,12 @@ class WorkdayAccounts:
         response_text = page.locator("body").inner_text().casefold()
         if re.search(r"invalid username\s*/\s*password|invalid (?:username|password)|incorrect password", response_text):
             return AccountStep(message="Workday rejected the account request: Invalid Username/Password. The control was activated, but account creation did not succeed. Check the account email/password or use an existing account; no automatic retry was sent.")
+        if not creating:
+            try:
+                # A typed password is stored only after Workday accepts it, so a typo cannot lock later runs.
+                self.credentials.put(self.scope, self.email, password, pending=False)
+            except Exception:
+                return AccountStep(message="Signed in, but the password could not be saved to the Keychain. It was not stored.")
         if creating:
             from pocket_agent.forms.reader import extract_page
             if extract_page(page).gate not in {"login", "verification", "captcha"}:

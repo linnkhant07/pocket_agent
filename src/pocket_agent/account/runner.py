@@ -79,7 +79,7 @@ def learned_answers(memory_path: Path) -> list[tuple[str, str, bool, str]]:
         memory.close()
 
 
-def sync_learned_answers(client: AccountClient, memory_path: Path, known: dict[str, tuple[str, bool]]) -> int:
+def sync_learned_answers(client: AccountClient, memory_path: Path, known: dict[str, tuple[str, bool]]) -> tuple[int, str]:
     saved = 0
     try:
         for key, value, always_use, label in learned_answers(memory_path):
@@ -87,12 +87,28 @@ def sync_learned_answers(client: AccountClient, memory_path: Path, known: dict[s
                 continue
             client.save_answer(key, value, always_use, label)
             saved += 1
-    except AccountError:
+    except AccountError as exc:
         print("Some answers from this fill could not be saved to your account. You may be asked again next time.")
-        return saved
+        return saved, str(exc)
     if saved:
         print(f"Saved {saved} new answer(s) to your account for future applications.")
-    return saved
+    return saved, ""
+
+
+def sweep_old_account_folders(max_age_seconds: int = 3600) -> None:
+    """Remove account snapshots left behind when a fill was killed. The live folder is newer than this."""
+    import shutil
+    import tempfile
+    import time
+
+    root = Path(tempfile.gettempdir())
+    now = time.time()
+    for path in root.glob("pocket-account-*"):
+        try:
+            if path.is_dir() and now - path.stat().st_mtime > max_age_seconds:
+                shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def require_https(url: str) -> None:
@@ -107,6 +123,7 @@ class AccountFill:
     home: Path
     status: str = "stopped"
     unresolved: list[str] = field(default_factory=list)
+    sync_error: str = ""
 
     @property
     def resume(self) -> Path:
@@ -117,24 +134,54 @@ class AccountFill:
 def account_fill(client: AccountClient, url: str) -> Iterator[AccountFill]:
     """Snapshot the account into a 0700 temp home; on exit sync answers, record the run, delete the folder."""
     require_https(url)
+    sweep_old_account_folders()
     snapshot = client.snapshot()
     profile, resume_object = snapshot_profile(snapshot)
     content = client.download_resume(resume_object)
+    import signal
+
     with TemporaryDirectory(prefix="pocket-account-") as directory:
         home = Path(directory)
         os.chmod(home, 0o700)
-        dump_profile(home / "profile.yaml", profile)
-        (home / "resume.pdf").write_bytes(content)
+        profile_path = home / "profile.yaml"
+        dump_profile(profile_path, profile)
+        resume_path = home / "resume.pdf"
+        resume_path.write_bytes(content)
+        for path in (profile_path, resume_path):
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
         run = AccountFill(home)
+        previous = None
+        try:
+            previous = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit(0)))
+        except (ValueError, OSError):
+            previous = None
+
+        def _restore() -> None:
+            if previous is not None:
+                try:
+                    signal.signal(signal.SIGTERM, previous)
+                except (ValueError, OSError):
+                    pass
+
         try:
             yield run
         finally:
-            sync_learned_answers(client, home / "forms.sqlite", client_answers(snapshot))
             try:
-                client.record_run(str(uuid4()), url, run.status, run.unresolved)
-            except AccountError:
-                # Fill results cannot be reconstructed after a crash; do not claim sync.
-                print("Fill finished locally, but history could not be saved. The account history may be incomplete.")
+                _saved, error = sync_learned_answers(client, home / "forms.sqlite", client_answers(snapshot))
+                if error:
+                    run.sync_error = error
+                try:
+                    client.record_run(str(uuid4()), url, run.status, run.unresolved)
+                except AccountError as exc:
+                    # Fill results cannot be reconstructed after a crash; do not claim sync.
+                    print("Fill finished locally, but history could not be saved. The account history may be incomplete.")
+                    run.sync_error = run.sync_error or str(exc)
+            finally:
+                _restore()
 
 
 def run_account_fill(args, fill: Callable[..., int], *, client: AccountClient | None = None) -> int:

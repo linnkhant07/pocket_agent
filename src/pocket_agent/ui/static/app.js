@@ -26,7 +26,7 @@ async function api(path, options = {}) {
   let {response, body} = await request(path, options);
   if (response.status === 401 && token && await refreshSession()) ({response, body} = await request(path, options));
   if (!response.ok) {
-    if (response.status === 401) signOut();
+    if (response.status === 401 && !options.keepSession) signOut();
     throw new Error(typeof body.detail === 'string' ? body.detail : 'Check the fields and try again.');
   }
   return body;
@@ -39,6 +39,15 @@ function bindForm(id, action) {
     finally { if (button) button.disabled = false; }
   });
 }
+async function flushPending() {
+  const keys = [...autosaves.keys()];
+  for (const key of keys) {
+    const record = autosaves.get(key);
+    if (record && record.pending !== null) {
+      try { await flushAnswer(key); } catch { /* a failed save stays pending for the next attempt */ }
+    }
+  }
+}
 function signOut() {
   for (const record of autosaves.values()) clearTimeout(record.timer);
   autosaves.clear();
@@ -50,10 +59,12 @@ function signOut() {
   $('profile').hidden = true; $('answers').hidden = true; $('apply').hidden = true;
   $('resumeState').textContent = 'Upload your resume first. We will fill in the details for you.';
   $('advanced').value = '{}'; $('resumeFile').value = '';
-  desk.close();
+  $('fillLog').replaceChildren(); $('fillResult').textContent = ''; $('askCard').hidden = true; $('continueFill').hidden = true;
+  if (desk.socket) { desk.socket.close(); desk.socket = null; }
+  desk.phase = 'idle'; desk.asking = null;
 }
 $('logout').addEventListener('click', async () => {
-  try { await api('/api/auth/logout', {method:'POST'}); notice('You have signed out on this computer.'); }
+  try { await flushPending(); await api('/api/auth/logout', {method:'POST'}); notice('You have signed out on this computer.'); }
   catch { notice('Signed out here. Pocket Agent could not confirm the session was revoked.', true); }
   finally { signOut(); }
 });
@@ -286,17 +297,32 @@ async function flushAnswer(key) {
   record.status.textContent = 'Saving…';
   const path = '/api/account/answers/' + encodeURIComponent(key);
   try {
-    if (value.trim()) await api(path, {method:'PUT', body:JSON.stringify({value, label:record.label})});
-    else await api(path, {method:'DELETE'});
+    if (value.trim()) await api(path, {method:'PUT', body:JSON.stringify({value, label:record.label}), keepSession:true});
+    else await api(path, {method:'DELETE', keepSession:true});
     if (record.pending === null) record.status.textContent = value.trim() ? 'Saved' : 'Removed';
-  } catch(error) { record.status.textContent = error.message; }
+  } catch(error) {
+    record.pending = value;
+    record.status.textContent = error.message;
+  }
   finally {
     record.inFlight = false;
     if (autosaves.get(key) === record && record.pending !== null) await flushAnswer(key);
   }
 }
-function answerInput(key, label, value) {
-  const input = document.createElement('input'); input.value = value; input.maxLength = 20000;
+function answerInput(key, label, value, choices) {
+  let input;
+  if (choices && choices.length) {
+    input = document.createElement('select');
+    const blank = document.createElement('option'); blank.value = ''; blank.textContent = 'Choose your answer'; input.append(blank);
+    for (const choice of choices) {
+      const option = document.createElement('option'); option.value = choice; option.textContent = choice;
+      if (choice === value) option.selected = true;
+      input.append(option);
+    }
+    const other = document.createElement('option'); other.value = '__other__'; other.textContent = 'Other'; input.append(other);
+  } else {
+    input = document.createElement('input'); input.value = value; input.maxLength = 20000;
+  }
   const status = document.createElement('span'); status.className = 'muted'; status.setAttribute('role','status');
   autosaveRecord(key, label, status);
   input.addEventListener('input', () => {
@@ -315,7 +341,7 @@ function renderQuestions(questions) {
     const heading = document.createElement('h3'); heading.textContent = question.label;
     if (question.sensitive) { const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = 'Sensitive · optional'; heading.append(badge); }
     const label = document.createElement('label'); label.textContent = 'Your answer';
-    const {input, status} = answerInput(question.key, question.label, saved ? saved.value : '');
+    const {input, status} = answerInput(question.key, question.label, saved ? saved.value : '', question.choices);
     label.append(input); row.append(heading, label, status); $('questionList').append(row);
   }
   const asked = new Set(questions.map(q => q.key));
@@ -363,9 +389,14 @@ function renderRuns(runs) {
     $('runList').append(row);
   }
 }
-async function reload() {
+async function reload(options = {}) {
   const result = await api('/api/account'); profile = result.profile ? result.profile.data : {}; revision = result.profile ? result.profile.revision : 0;
-  savedAnswers = result.answers || []; fillProfile(); renderQuestions(result.questions); renderRuns(result.runs || []);
+  savedAnswers = result.answers || [];
+  if (options.profile !== false) fillProfile();
+  const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest('#questionList');
+  const dirty = [...autosaves.values()].some(record => record.pending !== null);
+  if (!(options.profile === false && (focused || dirty))) renderQuestions(result.questions);
+  renderRuns(result.runs || []);
   $('identity').textContent = result.user.email || 'YOUR WORKSPACE'; $('workspace').hidden = false; $('auth').hidden = true; $('logout').hidden = false;
   desk.open();
   if (!aiStatus) loadAI();
@@ -404,11 +435,15 @@ function showAsk(event) {
   }
   control.id = 'askValue'; control.maxLength = 20000; desk.control = control;
   $('askControl').replaceChildren(control);
+  const remember = $('askRemember');
+  remember.checked = false;
+  $('askRememberLabel').hidden = !event.sensitive;
   setPhase('asking');
 }
 function sendAnswer(skip) {
   const value = skip ? '' : desk.control.value;
-  desk.socket.send(JSON.stringify({type:'answer', value, skip}));
+  const alwaysUse = !skip && desk.asking && desk.asking.sensitive && $('askRemember').checked;
+  desk.socket.send(JSON.stringify({type:'answer', value, skip, always_use: alwaysUse, question_id: desk.asking ? desk.asking.question_id : ''}));
   logLine(skip ? 'Skipped: ' + desk.asking.label : 'Answered: ' + desk.asking.label);
   desk.asking = null; setPhase('filling');
 }
@@ -422,7 +457,7 @@ const deskEvents = {
     $('continueFill').hidden = event.status !== 'blocked';
     const unresolved = event.unresolved.length ? ' Still unanswered: ' + event.unresolved.join(', ') + '.' : '';
     $('fillResult').textContent = fillStatus[event.status] + unresolved; $('fillResult').dataset.status = event.status;
-    try { await reload(); } catch (error) { notice(error.message, true); }
+    try { await reload({profile:false}); } catch (error) { notice(error.message, true); }
   },
 };
 desk.open = () => {

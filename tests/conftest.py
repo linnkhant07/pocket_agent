@@ -1,7 +1,24 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # A non-tty run is fully buffered. Line buffering keeps the final pass/fail line visible.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(line_buffering=True)
+            except (OSError, ValueError):
+                pass
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
 
 
 @pytest.fixture

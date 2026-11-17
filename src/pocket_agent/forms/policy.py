@@ -12,7 +12,7 @@ SENSITIVE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(gender|sex)\b", re.I), "gender"),
     (re.compile(r"\b(hispanic|latino)\b", re.I), "hispanic"),
     (re.compile(r"\b(race|ethnicity)\b", re.I), "race"),
-    (re.compile(r"veteran", re.I), "veteran_status"),
+    (re.compile(r"\b(veteran|armed forces|military service|uniformed services|have you served)\b", re.I), "veteran_status"),
     (re.compile(r"disabilit", re.I), "disability_status"),
     (re.compile(r"\b(salary|compensation|pay expectations?|desired pay|expected pay|wage)\b", re.I), "salary_expectation"),
     (re.compile(r"\b(felony|felonies|criminal|conviction|convicted)\b", re.I), "criminal_history"),
@@ -44,7 +44,18 @@ SENSITIVE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 SENSITIVE_KEYS = {key for _, key in SENSITIVE_RULES}
 
 
-def sensitive_key(label: str) -> str | None:
+def _hispanic_option_set(options: tuple[str, ...] | list[str]) -> bool:
+    """Ethnicity questions whose choices are only Hispanic / Not Hispanic, not a race list."""
+    meaningful = [option for option in options if option.strip() and option.strip().casefold() not in {"select", "select one", "choose", "choose one"}]
+    if not meaningful or not any(re.search(r"hispanic|latino", option, re.I) for option in meaningful):
+        return False
+    race_word = re.compile(r"\b(asian|white|black|african|pacific|hawaiian|native|alaska|two or more|multiracial)\b", re.I)
+    return not any(race_word.search(option) for option in meaningful)
+
+
+def sensitive_key(label: str, options: tuple[str, ...] | list[str] | None = None) -> str | None:
+    if options and _hispanic_option_set(options):
+        return "hispanic"
     for pattern, key in SENSITIVE_RULES:
         if pattern.search(label):
             return key
@@ -55,15 +66,18 @@ def is_sensitive_key(key: str | None) -> bool:
     return bool(key) and key in SENSITIVE_KEYS
 
 
-def ask_key(label: str, section: str = "") -> str | None:
+def ask_key(label: str, section: str = "", options: tuple[str, ...] | list[str] | None = None) -> str | None:
     """Key that must be asked, not guessed. Work-history dates are not in this set."""
-    forced = sensitive_key(label)
+    forced = sensitive_key(label, options)
     if forced:
         return forced
     if section == "eeo" and re.search(r"\bdate\b", label, re.I) and "birth" not in label.casefold():
         return "signature_date"
-    if re.search(
-        r"\b(earliest start|available to start|when can you start|date you can (start|begin)|date you are available)\b",
+    # A start date inside work or education history is that block's date, not availability.
+    if section not in {"work", "education"} and not re.search(r"\b(work|job|employment|school|education)\b", label, re.I) and re.search(
+        r"\b(earliest|desired|available|availability)\b.{0,40}\bstart\b|"
+        r"\bwhen can you start\b|\bdate you can (start|begin)\b|\bdate you are available\b|"
+        r"\bavailability to start\b|\bstart date\b",
         label,
         re.I,
     ):

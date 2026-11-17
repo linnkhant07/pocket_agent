@@ -88,6 +88,12 @@ def _access_token(ring, url: str, key: str) -> str | None:
         except AccountError as error:
             if error.status_code not in (400, 401):
                 raise
+            code = error.provider_code or ""
+            # A wrong anon key is not a revoked session. Leave the refresh token where it is.
+            if code in {"invalid_api_key", "invalid_project_key"} or "api key" in str(error).casefold():
+                raise
+            if code and code not in {"refresh_token_not_found", "invalid_grant", "session_not_found"}:
+                raise
             ring.delete_password(_service(url), "refresh")  # Revoked or expired; sign in again.
             return None
         finally:

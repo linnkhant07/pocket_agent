@@ -221,7 +221,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         "license": hardware.model.license,
         "hf_repo": hardware.model.hf_repo,
     }
-    save_config(config, home)
+    existing = load_config(home)
+    # Re-running init refreshes hardware keys and keeps the resume path and account settings.
+    save_config({**existing, **config}, home)
     print(f"Pocket Agent home: {home}")
     print(hardware.summary)
     print(f"License: {hardware.model.license}. {hardware.model.notes}")
@@ -494,7 +496,7 @@ def cmd_ui(args: argparse.Namespace) -> int:
     app = create_app(port=args.port)
     if not args.no_open:
         threading.Timer(0.6, lambda: webbrowser.open(f"http://{host}:{args.port}")).start()
-    uvicorn.run(app, host=host, port=args.port, log_level="info")
+    uvicorn.run(app, host=host, port=args.port, log_level="info", access_log=False)
     return 0
 
 
@@ -536,6 +538,9 @@ def _fill(args: argparse.Namespace, home: Path, account=None) -> int:
     from pocket_agent.forms.policy import is_sensitive_key
     from pocket_agent.forms.seed import seed_memory
 
+    if getattr(args, "headless", False) and not args.unattended:
+        print("Headless mode cannot show you a page to fix. Re-run without --headless, or pass --unattended.")
+        return 2
     config = load_config(home)
     if args.unattended is None:
         args.unattended = bool((config.get("fill") or {}).get("unattended", False))
@@ -592,6 +597,8 @@ def _fill(args: argparse.Namespace, home: Path, account=None) -> int:
         always = False
         if is_sensitive_key(asked.key):
             always = input("Always use this answer on future forms? [Y/n] ").strip().lower() not in {"n", "no"}
+        else:
+            always = True
         return UserAnswer(value, always)
 
     with sync_playwright() as playwright:
@@ -639,13 +646,17 @@ def _fill(args: argparse.Namespace, home: Path, account=None) -> int:
             import json
             report_path = home / "last-fill-report.json"
             report_path.write_text(json.dumps({"url": args.url, "status": run.status, "current_step": run.current_step, "gate": run.gate, "error": run.error, "unresolved": list(dict.fromkeys(unresolved + run.unresolved)), "validation_errors": run.validation_errors, "resume_path": str(resume), "submits": run.submits, "ai": ai_stats}, indent=2))
+            try:
+                os.chmod(report_path, 0o600)
+            except OSError:
+                pass
             print(f"Unattended run {run.status}. Current step: {run.current_step or 'unknown'}. Unresolved fields: {len(unresolved)}. Report: {report_path}")
             if run.error:
                 print(run.error)
             for label in unresolved:
                 print(f"needs answer: {label}")
-            print("Browser left open for review. Close the browser window to exit.")
             if not (getattr(args, "headless", False) or getattr(args, "close_on_finish", False)):
+                print("Browser left open for review. Close the browser window to exit.")
                 try:
                     page.wait_for_event("close", timeout=0)
                 except Exception:

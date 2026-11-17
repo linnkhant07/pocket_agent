@@ -144,6 +144,8 @@ PHRASES: dict[str, str] = {
     "how did you hear": "how_did_you_hear",
     "hear about": "how_did_you_hear",
     "referral source": "how_did_you_hear",
+    "source": "how_did_you_hear",
+    "how did you find": "how_did_you_hear",
     "resume": "resume",
     "cv": "resume",
     "resume cv": "resume",
@@ -206,6 +208,10 @@ CONTAINS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("hear", "about"), "how_did_you_hear"),
     (("how", "hear"), "how_did_you_hear"),
     (("referral", "source"), "how_did_you_hear"),
+    (("find", "position"), "how_did_you_hear"),
+    (("find", "opening"), "how_did_you_hear"),
+    (("find", "role"), "how_did_you_hear"),
+    (("referred",), "how_did_you_hear"),
     (("postal",), "postal_code"),
     (("zip",), "postal_code"),
     (("postcode",), "postal_code"),
@@ -254,8 +260,10 @@ def section_of(heading: str) -> str:
         return "eeo"
     if any(word in text for word in ("experience", "employment", "work history")):
         return "work"
+    # "Additional Questions" is not a work-history block. An empty section used to
+    # let "start date" reuse work.0.start.
     if "question" in text:
-        return ""
+        return "questions"
     if "review" in text:
         return "review"
     if any(word in text for word in ("voluntary", "self-identify", "self identify", "ofccp", "disability")):
@@ -269,7 +277,23 @@ def section_of(heading: str) -> str:
 
 def _section_ok(key: str, section: str) -> bool:
     expected = _SECTION.get(key)
-    if expected is None or section in {"", "contact", "eeo"}:
+    # "Start date" is an employment date only inside a work section, and a school date only in education.
+    # A question block must not reuse work.0.start. School, degree, and graduation stay recognizable
+    # on a step that is simply titled "Dates".
+    if key in {"work.start", "work.end", "education.start"}:
+        # A bare start date in a question block is availability. "Work start date" on an Apply step is still work.
+        if section in {"questions", "education"} and key.startswith("work."):
+            return False
+        if section == "work" and key == "education.start":
+            return False
+        if section in {"", "contact", "eeo", expected}:
+            return True
+        return section == expected
+    if expected == "work" and section in {"education", "questions"}:
+        return False
+    if expected == "education" and section in {"work", "questions"}:
+        return False
+    if expected is None or section in {"", "contact", "eeo", "questions", expected}:
         return True
     return expected == section
 
@@ -335,9 +359,9 @@ def date_part_key(label: str, section: str) -> str | None:
     return None
 
 
-def match_label(label: str, *, section: str = "", learned: dict[str, str] | None = None) -> Match | None:
+def match_label(label: str, *, section: str = "", learned: dict[str, str] | None = None, options: tuple[str, ...] | list[str] | None = None) -> Match | None:
     """Return the canonical key for a label, or None when it is ambiguous."""
-    sensitive = sensitive_key(label)
+    sensitive = sensitive_key(label, options)
     if sensitive:
         return Match(sensitive, 1.0, "sensitive")
     text = phrase(label)
@@ -346,6 +370,14 @@ def match_label(label: str, *, section: str = "", learned: dict[str, str] | None
     dated = date_part_key(label, section)
     if dated:
         return Match(dated, 1.0, "exact")
+    parts = text.split()
+    if (
+        section not in {"work", "education"}
+        and "start" in parts
+        and "date" in parts
+        and not {"work", "job", "employment", "school", "education"} & set(parts)
+    ):
+        return Match("available_start", 1.0, "tokens")
     if learned:
         # Memory stores labels casefolded with punctuation; compare them the same way as the label.
         key = learned.get(text) or {phrase(seen): saved for seen, saved in learned.items()}.get(text)

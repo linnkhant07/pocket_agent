@@ -97,7 +97,7 @@ begin
         returning p.* into saved;
     end if;
     if saved.user_id is null then
-        raise exception 'Profile changed; reload before saving' using errcode = '40001';
+        raise exception 'Profile changed; reload before saving' using errcode = 'PT409';
     end if;
     return saved;
 end;

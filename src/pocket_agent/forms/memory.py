@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,10 @@ class Memory:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self._db = sqlite3.connect(path, check_same_thread=False)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(
             """

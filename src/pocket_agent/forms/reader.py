@@ -121,6 +121,29 @@ _EXTRACT = r"""
       input_type: "radio",
     });
   }
+  // A legend over two or more checkboxes is one question ("select all that apply"), not a pile of unlabelled boxes.
+  for (const set of document.querySelectorAll("fieldset")) {
+    const legend = set.querySelector(":scope > legend");
+    const boxes = [...set.querySelectorAll("input[type=checkbox]")].filter((box) => visible(box) && !consumed.has(box));
+    if (!legend || boxes.length < 2) continue;
+    boxes.forEach((box) => consumed.add(box));
+    const options = boxes.map((box) => ({ label: clean(labelFor(box) || textOf(box.parentElement) || box.value), uid: stamp(box) }));
+    const chosen = boxes.filter((box) => box.checked).map((box) => options[boxes.indexOf(box)].label);
+    const spot = set.getBoundingClientRect();
+    fields.push({
+      uid: stamp(set),
+      order: spot.top * 1000 + spot.left,
+      label: clean(textOf(legend)),
+      kind: "multicheck",
+      required: boxes.some((box) => box.required) || /[*\u2731]/.test(legend.textContent),
+      options,
+      placeholder: "",
+      heading: heading(set),
+      value: chosen.join(", "),
+      input_type: "checkbox",
+      list_id: "",
+    });
+  }
   const controls = [...document.querySelectorAll('input, textarea, select, button[role=combobox], button[aria-haspopup=listbox][name]')];
   for (const el of controls) {
     // Upload widgets often hide the real file input behind a visible drop zone.
@@ -231,18 +254,33 @@ _EXTRACT = r"""
   const progressNode = document.getElementById("progress") || document.querySelector("[data-automation-id=progressBarActiveStep]");
   const progress = progressNode ? textOf(progressNode) : "";
   const alerts = [...document.querySelectorAll("[role=alert]")].filter(visible).map(textOf);
-  const blob = (document.body.innerText || "").toLowerCase();
+  const headings = [...document.querySelectorAll("h1, h2, h3")].filter(visible).map((el) => clean(textOf(el)).toLowerCase());
   let gate = "";
+  let gateReason = "";
   // A challenge drawn in a visible iframe never shows up in body text. A hidden invisible-mode badge is not a challenge.
   const challenge = [...document.querySelectorAll("iframe")].some((frame) => /captcha|challenges\.cloudflare/i.test((frame.src || "") + " " + (frame.title || "")) && visible(frame) && frame.getBoundingClientRect().width > 60 && frame.getBoundingClientRect().height > 60);
-  if (challenge || /captcha|i'm not a robot|i am not a robot|verify you are human/.test(blob)) gate = "captcha";
-  else if (/verify your (email|account)|verification (code|email)|check your (email|inbox)|one.time (code|password)|two.factor/.test(blob)) gate = "verification";
-  else if (document.querySelector('input[type="password"]') || /create an account|create your account|sign in to apply|account already exists|already have an account/.test(blob)) gate = "login";
+  const otp = [...document.querySelectorAll("input[autocomplete='one-time-code']")].filter(visible);
+  const password = [...document.querySelectorAll('input[type="password"]')].some(visible);
+  if (challenge || headings.some((text) => /captcha|verify you are human|i'm not a robot|i am not a robot/.test(text))) {
+    gate = "captcha";
+    gateReason = challenge ? "visible challenge frame" : "captcha heading";
+  } else if (otp.length || headings.some((text) => /verify your (email|account)|verification code|check your (email|inbox)/.test(text))) {
+    gate = "verification";
+    gateReason = otp.length ? "one-time code field" : "verification heading";
+  } else if (password || headings.some((text) => /^(sign in|log in|create an account|create your account)\b/.test(text) || /sign in to apply/.test(text))) {
+    gate = "login";
+    gateReason = password ? "password field" : "auth heading";
+  }
   // A modal asking the user to agree (Eightfold's "Data Privacy Agreement" after a resume upload) blocks every
   // click behind it. Agreeing is the user's call, and its buttons are type=submit, so hand the browser over.
-  else if ([...document.querySelectorAll("[role=dialog][aria-modal=true], [role=alertdialog]")].some((box) => visible(box) && !/cookie/i.test(textOf(box)) && [...box.querySelectorAll("button")].some((el) => visible(el) && /^(i agree|agree|i accept|accept)$/i.test(clean(textOf(el)))))) gate = "consent";
-  else if (!fields.length && [...document.querySelectorAll("a, button")].some((el) => visible(el) && (/^(adventureButton|applyManually)$/.test(el.getAttribute("data-automation-id") || "") || /^(apply|apply now|apply manually|start (your )?application)$/i.test(clean(textOf(el)))))) gate = "start";
-  return { fields, buttons, progress, alerts, gate };
+  else if ([...document.querySelectorAll("[role=dialog][aria-modal=true], [role=alertdialog]")].some((box) => visible(box) && !/cookie/i.test(textOf(box)) && [...box.querySelectorAll("button")].some((el) => visible(el) && /^(i agree|agree|i accept|accept)$/i.test(clean(textOf(el)))))) {
+    gate = "consent";
+    gateReason = "agreement dialog";
+  } else if (!fields.length && [...document.querySelectorAll("a, button")].some((el) => visible(el) && (/^(adventureButton|applyManually)$/.test(el.getAttribute("data-automation-id") || "") || /^(apply|apply now|apply manually|start (your )?application)$/i.test(clean(textOf(el)))))) {
+    gate = "start";
+    gateReason = "apply control";
+  }
+  return { fields, buttons, progress, alerts, gate, gateReason };
 }
 """
 
@@ -280,6 +318,7 @@ class PageSnapshot:
     progress: str = ""
     alerts: list[str] = field(default_factory=list)
     gate: str = ""
+    gate_reason: str = ""
 
 
 def extract_page(page) -> PageSnapshot:
@@ -318,6 +357,7 @@ def extract_page(page) -> PageSnapshot:
         progress=raw["progress"],
         alerts=list(raw["alerts"]),
         gate=raw.get("gate") or "",
+        gate_reason=raw.get("gateReason") or "",
     )
 
 

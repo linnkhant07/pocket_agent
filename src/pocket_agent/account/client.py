@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+import re
 from urllib.parse import quote, urlencode, urlsplit
 from uuid import UUID, uuid4
 
@@ -30,10 +31,11 @@ _LOG = logging.getLogger(__name__)
 
 
 class AccountError(RuntimeError):
-    def __init__(self, message: str, status_code: int = 502, *, reason: str | None = None):
+    def __init__(self, message: str, status_code: int = 502, *, reason: str | None = None, provider_code: str | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.reason = reason if reason in ACCOUNT_ERROR_MESSAGES else None
+        self.provider_code = provider_code if isinstance(provider_code, str) and re.fullmatch(r"[A-Za-z0-9_]{1,80}", provider_code) else None
 
 
 def _dotenv_settings() -> dict[str, str]:
@@ -92,26 +94,32 @@ class AccountClient:
         if response.is_error:
             status = response.status_code
             reason = None
+            provider_code = None
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                candidate = payload.get("error_code") or payload.get("code")
+                if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_]{1,80}", candidate):
+                    provider_code = candidate
             if path.startswith("/auth/v1/"):
-                try:
-                    payload = response.json()
-                    candidate = payload.get("error_code") if isinstance(payload, dict) else None
-                except ValueError:
-                    candidate = None
                 # Unrecognized provider strings must never be reflected or logged.
-                if isinstance(candidate, str) and candidate in ACCOUNT_ERROR_MESSAGES:
-                    reason = candidate
+                if provider_code in ACCOUNT_ERROR_MESSAGES:
+                    reason = provider_code
                 elif status in {401, 403} and path == "/auth/v1/settings":
                     reason = "invalid_project_key"
                 elif status >= 500:
                     reason = "auth_service_error"
                 _LOG.warning("Supabase Auth request failed: upstream_status=%s reason=%s", status, reason or "unclassified")
+            if provider_code in {"40001", "PT409"}:
+                status = 409
             if reason:
-                raise AccountError(ACCOUNT_ERROR_MESSAGES[reason], status, reason=reason)
+                raise AccountError(ACCOUNT_ERROR_MESSAGES[reason], status, reason=reason, provider_code=provider_code)
             message = ("Sign in again; your account session expired." if status in {401, 403}
                        else "Your profile changed in another tab. Reload before saving." if status == 409
                        else "Account request failed. Check your input and retry.")
-            raise AccountError(message, status)
+            raise AccountError(message, status, provider_code=provider_code)
         return response
 
     def _json(self, method, path, **kwargs):

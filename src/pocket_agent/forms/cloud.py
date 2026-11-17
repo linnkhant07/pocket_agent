@@ -25,6 +25,8 @@ class CloudBackend:
         self.disabled = False
         self._cached = {}
         self.attempted = self.responses = self.completed = self.failed = 0
+        self.status_attempted = 0
+        self.status_max = 1
         self.provider = provider
         from pocket_agent.ai_settings import PROVIDERS, api_key
         self.key = api_key(provider)
@@ -50,14 +52,23 @@ class CloudBackend:
             self.cache_hits += 1
             self.log('[AI] Reusing cached response; no API request.')
             return SimpleNamespace(**cached)
-        if self.disabled or self.attempted >= self.max_calls:
-            self.skipped += 1
-            reason = 'API disabled after failure' if self.disabled else f'request limit ({self.max_calls}) reached'
-            self.log(f'[AI] Skipped: {reason}; using rules or user input.')
-            raise RuntimeError('AI request skipped by cost controls.')
-        self.attempted += 1
-        number = self.attempted
         system = messages[0].get('content', '') if messages else ''
+        status_call = system.startswith('You classify job-application questions')
+        if status_call:
+            if self.status_attempted >= self.status_max:
+                self.skipped += 1
+                self.log('[AI] Skipped: status-question budget reached; using rules or user input.')
+                raise RuntimeError('AI request skipped by cost controls.')
+            self.status_attempted += 1
+            number = self.status_attempted
+        else:
+            if self.disabled or self.attempted >= self.max_calls:
+                self.skipped += 1
+                reason = 'API disabled after failure' if self.disabled else f'request limit ({self.max_calls}) reached'
+                self.log(f'[AI] Skipped: {reason}; using rules or user input.')
+                raise RuntimeError('AI request skipped by cost controls.')
+            self.attempted += 1
+            number = self.attempted
         purpose = ("salary market research" if web_search else "field matching" if system.startswith('Match this application')
                    else "reading what this page's status questions ask (no personal data sent)" if system.startswith('You classify job-application questions')
                    else "answer generation")
@@ -113,8 +124,6 @@ class CloudBackend:
         else:
             for part in data.get('content', []):
                 sources.extend(citation['url'] for citation in part.get('citations', []) if citation.get('url'))
-                if part.get('type') == 'web_search_tool_result' and isinstance(part.get('content'), list):
-                    sources.extend(item['url'] for item in part['content'] if item.get('type') == 'web_search_result' and item.get('url'))
         return SimpleNamespace(text=text, sources=list(dict.fromkeys(sources)))
 
 
