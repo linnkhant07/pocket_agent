@@ -93,12 +93,12 @@ At the sync commit, each of these scratch mutations to `guard.py` produced NEW v
 
 - `src/pocket_agent/forms/guard.py`: `looks_like_submit`, `classify_button`, `progress_is_last`, and the `_SUBMIT`, `_ACCOUNT`, `_FORWARD`, `_DISMISS`, `_ADD`, and `_STEP` patterns.
 - `src/pocket_agent/forms/engine.py`: `_advance` (the generic branch after the Workday `continue`), `_dismiss`, and `_add_button`.
-- **Sync commit: `PENDING`.** The checker was re-run after the last-page, final-heading, and exact-dismiss fixes. `known_findings.json` is empty: the 29 previous classes are refused, and the run reports no new violation. Both files matched this commit when that pass was confirmed.
+- **Sync commit: `bbe663d`.** The checker was re-run after the last-page, final-heading, and exact-dismiss fixes. `known_findings.json` is empty: the 29 previous classes are refused, and the run reports no new violation. Both files matched this commit when that pass was confirmed.
 
 Before trusting a pass, check for drift:
 
 ```bash
-git diff PENDING -- src/pocket_agent/forms/guard.py src/pocket_agent/forms/engine.py
+git diff bbe663d -- src/pocket_agent/forms/guard.py src/pocket_agent/forms/engine.py
 ```
 
 If the diff touches covered code, reread it against the path table above and update the checker if needed. Move the sync commit forward only after confirming that the checker describes the code at the new commit.
